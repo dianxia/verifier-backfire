@@ -1,0 +1,21 @@
+# Secrets — never commit
+.env
+
+# Python
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# LaTeX aux files
+paper/*.aux
+paper/*.log
+paper/*.out
+paper/*.synctex.gz
+
+# Private local notes — not part of the public artifact
+private/
+
+# Stray LaTeX log from failed root-dir compiles
+texput.log

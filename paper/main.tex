@@ -1,0 +1,858 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage[round]{natbib}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage[hidelinks]{hyperref}
+\usepackage{lmodern}
+\usepackage[T1]{fontenc}
+\usepackage{microtype}
+
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}{Lemma}
+\newtheorem{corollary}{Corollary}
+\newtheorem{proposition}{Proposition}
+\newtheorem{definition}{Definition}
+\newtheorem{remark}{Remark}
+
+\title{When Verifiers Backfire: A Cost--Correctness Theory of
+Generation--Verification--Repair Loops for LLMs}
+
+\author{Guidong Chen\thanks{Independent researcher. Email:
+\href{mailto:yilingzitianlu@qq.com}{yilingzitianlu@qq.com}}}
+
+\date{October 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Test-time verification is rapidly becoming a standard component of
+LLM agent systems: a generator produces an artifact, a verifier
+accepts or rejects it, and rejections trigger repair.  Existing
+theory (Dorner et al., ICLR 2026) characterizes how verifier
+imperfection shapes pure resampling methods such as rejection
+sampling and Best-of-$N$.  We extend this line of inquiry along three
+axes that pure-resampling theory does not cover: (i) a
+\emph{miss-asymmetry theorem} giving the closed-form exchange rate
+$R = a/(1-b)$ between the two verifier error types when retries
+redraw at the generator's rate---misses hurt
+final precision $a/(1-b)$ times as much per unit as false rejections,
+whose cost lands almost entirely in extra attempts; (ii) a
+\emph{repair-degradation theorem} showing the exchange rate is
+modulated by the retry success rate $q$: when $q$ falls below a
+computable threshold $q^\ast$, false rejections become the dominant
+harm and the asymmetry \emph{flips}; and (iii) an \emph{attribution
+analysis} decomposing the terminal-error underprediction of pooled
+per-attempt operating points into degraded retries (the dominant
+channel) and error clustering (a residual).  We validate the
+theory on HumanEval (164 problems, six arm configurations), pairing
+every looped arm's terminal outcome against its own first attempt.
+Oracle (unit-test) verification never loses a correct solution and
+rescues $14$/$10$ wrong ones (McNemar $p < 10^{-3}$); LLM judges
+with pooled operating points $(a,b) \approx (0.78\text{--}0.86,
+0.74\text{--}0.86)$ do the reverse---net $-12$ correct solutions for
+the isolated self-judge ($p = 0.004$, robust to counting only
+delivered outcomes), $-8$ for the cross-capability judge ($p =
+0.039$, convention-dependent), and a non-significant $-4$ for the
+context-sharing judge---and the flip is predicted from measured
+parameters alone ($q \approx 0.3$ vs.\ $q^\ast \approx 0.6$--$0.75$).
+A budget sweep sharpens the practical rule: every judge arm's
+single-shot delivered stream is purer than no verification, and the
+first retry already erases the gain for the self-judge.  The
+$\approx 3.4\times$ pooled-rate underprediction of terminal leak
+(task-level bootstrap 95\% CI $[2.1, 4.7]$) is fully explained by
+degraded retries: pooled rates mask the per-round trajectory, and
+no residual requires error clustering.  A matched-pool ablation
+\emph{suggests} that actionable feedback raises repair success
+($0.33$ vs.\ $0.19$; small sample), and we report an honest
+negative result on verifier-context
+self-verification collapse.
+Together, the results turn ``add a verifier'' from an article of
+faith into a quantitative design decision.
+\end{abstract}
+
+\section{Introduction}\label{sec:intro}
+
+Production LLM agent systems increasingly wrap generation in a
+verification loop: an executor produces an artifact, a verifier
+judges it, rejections trigger repair, and the loop terminates when
+the verifier accepts or the budget runs out.  This
+generation--verification--repair (GVR) pattern underlies executor/
+verifier pipelines, LLM-as-judge filters, and test-driven agent
+loops.  The engineering question it raises is sharp and often
+ignored: \emph{when does adding a verifier actually improve the
+final answer, and when does it make things worse?}
+
+Two literatures border this question without answering it.  The
+self-correction literature documents empirically that intrinsic
+self-correction frequently fails or degrades performance
+\citep{stechly2024selfverify,kamoi2024when,huang2024cannot}, while
+sound external verification helps.  The test-time-scaling theory of
+\citet{dorner2026rocnreroll} proves that instance-level accuracy of
+rejection sampling and Best-of-$N$ is characterized by the geometry
+of the verifier's ROC curve---but their analysis covers \emph{pure
+resampling}: rejection carries no feedback, retries are independent
+redraws, and no guidance is given on where along the ROC curve a
+verifier should operate.
+
+This paper contributes a compact theory of the GVR loop and a
+$164 \times 6$ empirical study that stresses it.  Our contributions:
+
+\begin{enumerate}
+\item \textbf{Miss-asymmetry theorem (§\ref{sec:asym}).}  For a GVR
+loop with generator success $p$ and verifier operating point
+$(a,b)$, the marginal damage of the miss rate $1-b$ to final
+precision exceeds that of the false-rejection rate $1-a$ by the
+factor $R = a/(1-b)$.  When retries redraw at the generator's rate,
+false rejections are nearly free for correctness and are paid for
+only in attempts ($R \approx 19$ at $(0.95,0.95)$): push catch rate
+aggressively.  The advice is conditional---§\ref{sec:degrade} derives
+the threshold $q^\ast$ below which it inverts.
+\item \textbf{Repair-degradation theorem (§\ref{sec:degrade}).}  The
+exchange rate above assumes retries redraw at the original success
+rate.  Real repair attempts are degraded---conditioned on rejection,
+retries draw from a much harder pool, with success $q \ll p$.  We
+derive the modulated exchange rate
+$R_q = R \cdot \frac{q(1-p)}{p(1-q)}$ and the flip threshold
+$q^\ast = \frac{(1-b)p}{(1-p)a + (1-b)p}$ below which \emph{false
+rejections become the dominant harm}.  Measured $q \approx 0.3$
+against $q^\ast \approx 0.6$--$0.75$ predicts---from parameters
+alone ($q$ itself estimated from a mixed rejection pool;
+§\ref{sec:exp})---that the LLM-judge arms in our study backfire;
+they do, most robustly the isolated self-judge (within-arm McNemar
+$p = 0.004$).
+\item \textbf{Pooled-rate attribution (§\ref{sec:cluster}).}
+Pooled per-attempt operating points, the natural summary reported by
+most evaluation studies, underpredict terminal leak by a consistent
+$\approx 3.4\times$ across our judge arms (task-level bootstrap
+95\% CI $[2.1, 4.7]$).  The cause is that pooled rates mask the
+per-round success trajectory $p_k$: a degradation-only model at the
+measured $p_k$ reproduces the gap in full, leaving no residual that
+requires cross-instance miss clustering (the attribution split is
+convention-dependent and not separably identified at this sample
+size).
+\item \textbf{Empirical validation and boundary conditions
+(§\ref{sec:exp}).}  Oracle verification confirms the theory exactly
+(against its own first attempts it never loses a correct solution
+and rescues $14$/$10$ wrong ones at $+27\%$ cost); a matched-pool
+ablation provides suggestive (small-sample) evidence that
+actionable feedback raises repair success from $0.19$ to $0.33$;
+and a
+verifier-context experiment yields an honest negative
+result: sharing the generator's reasoning with a same-model judge
+did \emph{not} collapse its accuracy, delimiting the scope of
+self-verification-collapse claims to self-correction loops rather
+than verification contexts.
+\end{enumerate}
+
+\section{Related Work}\label{sec:related}
+
+\paragraph{Self-correction and its critiques.}
+Self-Refine \citep{madaan2023selfrefine} and Reflexion
+\citep{shinn2023reflexion} popularized iterative self-improvement.
+\citet{stechly2024selfverify} showed systematic collapse of
+self-critique on formal tasks, with LLM verifiers exhibiting very
+high false-rejection rates; \citet{huang2024cannot} and the critical
+survey of \citet{kamoi2024when} reached compatible conclusions.  Our
+theory gives these observations a probabilistic form: collapse
+corresponds to failure-mode correlation between generator and
+verifier (§\ref{sec:mixture}), and our experiment delimits where
+that correlation does and does not appear.
+
+\paragraph{Test-time scaling theory.}
+\citet{dorner2026rocnreroll} prove that rejection sampling and
+Best-of-$N$ accuracy is determined by verifier ROC geometry, and
+that RS dominates BoN at fixed compute.  Their setting is pure
+resampling: no feedback, no repair, no generator--verifier
+correlation analysis, and no operating-point selection guidance.
+Our paper is a deliberate three-axis extension: repair feedback
+(§\ref{sec:repair}), operating-point calibration
+(§\ref{sec:asym}), and degraded/correlated retries
+(§\ref{sec:degrade},~\ref{sec:cluster}).  Related theory includes
+inference-time alignment coverage analysis
+\citep{huang2025bestofn}.  In the training-time regime,
+\citet{plesner2026imperfect} study robustness of RLVR to reward
+noise and explicitly leave asymmetric (FN/FP) noise to future work;
+our Theorem~\ref{thm:asym} supplies the inference-time counterpart
+of that asymmetry in closed form.
+
+\paragraph{Verification techniques.}
+Self-consistency \citep{wang2023selfconsistency} uses agreement as
+the verification signal; process supervision
+\citep{lightman2024verify} trains step-level verifiers;
+LLM-as-judge evaluation is surveyed by \citet{zheng2023judging}.
+Control-theoretic formalizations of self-correction dynamics appear
+in \citet{wu2026cybercorrect}; they manage loop stability, whereas
+we manage the verifier's error budget.  All of these techniques
+select a point on the verifier's quality trade-off; our results say
+\emph{which} point to select and when the loop tolerates a harsh
+verifier.
+
+\section{Theory}\label{sec:theory}
+
+\subsection{Setup: the GVR loop}\label{sec:setup}
+
+One \emph{attempt}: a generator produces an artifact; a verifier
+either \emph{accepts} or \emph{rejects} it (with feedback); a
+rejection triggers a new attempt, up to budget $N$.
+
+\begin{definition}[Per-attempt rates]\label{def:rates}
+Let correctness of an attempt be binary, with generator success
+$p = \Pr(C)$.  The verifier has acceptance rate
+$a = \Pr(\text{accept} \mid C)$ and catch rate
+$b = \Pr(\text{reject} \mid \neg C)$.  Its two error types are the
+\emph{miss} $1-b$ (accepting wrong work) and the \emph{false
+rejection} $1-a$ (rejecting correct work).
+\end{definition}
+
+\begin{definition}[Attempt outcomes]\label{def:outcomes}
+Per attempt: $s = pa$ (accept-correct),
+$\ell = (1-p)(1-b)$ (\emph{leak}: accept-wrong), and
+$r = 1 - s - \ell$ (reject).
+\end{definition}
+
+Terminal states: \emph{accepted} (split into correct and leak) and
+\emph{unresolved} (budget exhausted).  We assume (A1) the verdict is
+independent of the generation path given correctness and (A2)
+attempts are i.i.d.\ with constant $(p,a,b)$; both are relaxed in
+§\ref{sec:repair}--\ref{sec:cluster}.
+
+\begin{lemma}[Single-pass composition]\label{lem:single}
+For $N=1$, $\Pr(\text{deliver wrong}) = (1-p)(1-b)$: a wrong
+deliverable requires the conjunction of two independent failures.
+The false-rejection rate does not enter this quantity.
+\end{lemma}
+
+\begin{proof}
+Direct computation of $\Pr(\neg C \wedge \text{accept})$.
+\end{proof}
+
+\begin{theorem}[Loop closed forms]\label{thm:loop}
+Under (A1)--(A2), with budget $N \ge 1$:
+\begin{align}
+\Pr(\text{leak}) &= \ell\,\frac{1-r^N}{1-r}, \quad
+\Pr(\text{accepted}) = (s+\ell)\frac{1-r^N}{1-r},\\
+\Pr(\text{unresolved}) &= r^N, \qquad
+\mathbb{E}[\text{attempts}] = \frac{1-r^N}{1-r}.
+\end{align}
+\end{theorem}
+
+\begin{proof}
+The loop is geometric: reaching attempt $k$ requires $k-1$
+rejections (probability $r^{k-1}$); summing and telescoping gives
+the claims.  The instance-level structure matches the ROC-based
+characterization of \citet{dorner2026rocnreroll} for the pure
+resampling case; we state it in outcome-decomposed form for use
+below.
+\end{proof}
+
+\begin{theorem}[Budget--precision invariance]\label{thm:invariance}
+For every $N\ge1$,
+\[
+\pi := \Pr(\text{wrong} \mid \text{accepted})
+= \frac{(1-p)(1-b)}{pa + (1-p)(1-b)},
+\]
+independent of $N$: added budget converts unresolved mass into
+accepted mass \emph{at fixed precision}.
+\end{theorem}
+
+\begin{proof}
+Ratio of the leak and accepted probabilities in
+Theorem~\ref{thm:loop}; the geometric factors cancel.
+\end{proof}
+
+\subsection{The miss-asymmetry theorem}\label{sec:asym}
+
+Both verifier errors hurt $\pi$---misses first-order through $\ell$,
+false rejections second-order: each forced retry buys a fresh chance
+to leak.  Their marginal damages have a closed-form ratio.
+
+\begin{theorem}[Miss-asymmetry]\label{thm:asym}
+\[
+\frac{\partial \pi / \partial (1-b)}{\partial \pi / \partial (1-a)}
+= \frac{a}{1-b}.
+\]
+\end{theorem}
+
+\begin{proof}
+$\partial\pi/\partial(1-b) = (1-p)s/(s+\ell)^2$ and
+$\partial\pi/\partial(1-a) = p\ell/(s+\ell)^2$ by the chain rule on
+Definition~\ref{def:outcomes}; the ratio simplifies to $a/(1-b)$.
+\end{proof}
+
+At $(a,b)=(0.95,0.95)$, $R \approx 19$: one unit of catch rate is
+worth $\sim$19 units of acceptance rate for precision.  Meanwhile
+the cost channels are reversed: $1-a$ enters expected attempts
+first-order, $1-b$ only through the negligible $\ell$ term.
+
+\begin{corollary}[Calibration guideline]\label{cor:calibrate}
+Under (A2), any verifier modification trading acceptance for catch
+at an exchange rate better than $1{:}R$ strictly improves final
+precision; its price is paid only in attempts.  Calibrate verifiers
+aggressively toward catch rate; budget false rejections rather than
+fear them.  The qualifier is essential: when retries are degraded
+below $q^\ast$ (Theorem~\ref{thm:flip}) the effective exchange rate
+drops below 1 and the advice inverts---protect acceptance.
+\end{corollary}
+
+\begin{corollary}[Majority voting]\label{cor:majority}
+Replace a verifier by a majority vote of $k$ conditionally
+independent verifiers (strict majority rejects; ties accept).  For
+$a, b > 1/2$ the vote raises \emph{both} effective rates:
+\[
+b^{(k)} = \sum_{j>k/2}\binom{k}{j}b^j(1-b)^{k-j} > b, \qquad
+a^{(k)} = 1 - \sum_{j>k/2}\binom{k}{j}(1-a)^j a^{k-j} > a,
+\]
+because majority rule makes false rejections \emph{rarer}, not
+commoner---a lone objecting judge no longer suffices to reject.
+Precision therefore improves through both channels, and generator
+attempts do not increase (the rejection mass $r$ falls); the price
+is $k$ verifier invocations per round: at the pooled self-judge
+operating point of §\ref{sec:exp}, majority-of-three lowers
+expected generator attempts from $1.38$ to $1.25$ while raising
+expected verifier calls from $1.38$ to $3.75$---the cost moves from
+generation to verification, and whether it is worth paying depends
+on the two units' relative prices.  The catch-vs-acceptance
+trade-off that $R$ prices belongs instead to unanimity-style rules
+(reject if any judge objects), where $a^{(k)} = a^k$ falls sharply
+while $b^{(k)} = 1-(1-b)^k$ rises.
+\end{corollary}
+
+\subsection{Correlated failures}\label{sec:mixture}
+
+(A1) fails in a specific direction: a verifier that is the same
+model, primed with the generator's context, tends to repeat the
+generator's mistake.  Model this with a latent failure-mode mixture.
+
+\begin{definition}[Failure-mode mixture]\label{def:mixture}
+Conditioned on latent mode $M=m$ with prior $\pi_m$, generation
+succeeds with $p_m$; the verifier accepts correct output with
+$a_m$ and catches wrong output with $b_m$, independently within
+mode.
+\end{definition}
+
+\begin{definition}[Effective rates]\label{def:beff}
+With $\epsilon = \sum_m \pi_m(1-p_m)$, error mass
+$\mu_m = \pi_m(1-p_m)/\epsilon$ and success mass
+$\sigma_m = \pi_m p_m/(1-\epsilon)$:
+$b_{\mathrm{eff}} = \sum_m \mu_m b_m$ is the error-mass-weighted
+catch rate and $a_{\mathrm{eff}} = \sum_m \sigma_m a_m$ the
+success-mass-weighted acceptance rate.
+\end{definition}
+
+\begin{theorem}[Decorrelation condition]\label{thm:decorr}
+Attempt-1 outcomes obey the closed forms of §\ref{sec:setup} with
+pooled rates $(p,a,b) \to (1-\epsilon,\, a_{\mathrm{eff}},\,
+b_{\mathrm{eff}})$; in particular the accepted-stream error
+\[
+\pi_1 = \frac{\epsilon\,(1-b_{\mathrm{eff}})}
+{\epsilon\,(1-b_{\mathrm{eff}}) + (1-\epsilon)\,a_{\mathrm{eff}}}
+\]
+improves on no verification (delivered error $\epsilon$) iff
+\[
+a_{\mathrm{eff}} + b_{\mathrm{eff}} > 1,
+\]
+i.e., iff the mass-weighted operating point lies above the chance
+diagonal of ROC space: verification helps exactly when
+$\Pr(\text{accept}\mid C) > \Pr(\text{accept}\mid \neg C)$.  Catch
+alone does not suffice: if $b_{\mathrm{eff}} \to 0$ while
+$a_{\mathrm{eff}} < 1$, verification is \emph{strictly harmful}
+($\pi_1 = \epsilon/[\epsilon+(1-\epsilon)a_{\mathrm{eff}}] >
+\epsilon$), degenerating to neutral theater only in the
+rubber-stamp limit $a_{\mathrm{eff}} \to 1$.  Correlated failure has
+an exact form: with $\nu = \sum_m \pi_m(1-b_m)$ the prior-weighted
+miss rate,
+\[
+\Pr(\text{wrong} \wedge \text{miss})
+= \epsilon(1-b_{\mathrm{eff}})
+= \epsilon\nu + \mathrm{Cov}_m(1-p_m,\,1-b_m),
+\]
+the covariance over modes under prior $\pi_m$: decorrelation is
+precisely the claim that this covariance be small.
+\end{theorem}
+
+For $N>1$ the mixture bites: with instance-persistent modes,
+surviving to round $k$ conditions on the mode mix.  §\ref{sec:exp}
+validates the attempt-1 form directly---every judge arm's pooled
+operating point lies above the chance diagonal, and every arm's
+single-shot delivered stream is purer than no verification---while
+the terminal gap beyond degraded retries is the quantity the
+covariance term would have to explain; our data bound it but do
+not identify it.
+
+\subsection{Repair feedback breaks i.i.d.\ --- favorably}\label{sec:repair}
+
+\begin{proposition}[Repair factor]\label{prop:delta}
+Let rejected attempts be followed by a repaired attempt succeeding
+with $p' = p + \delta(1-p)$, $\delta \in [0,1]$ ($\delta=0$:
+rejection sampling; $\delta=1$: perfect repair).  Then all
+formulas of §\ref{sec:asym} with constant $p$ are conservative
+(actual leak is upper-bounded), and the invariance of
+Theorem~\ref{thm:invariance} breaks in the favorable direction:
+precision improves with budget.
+\end{proposition}
+
+\begin{proof}[Proof sketch]
+Sample a uniform $u$ once per attempt slot and couple a repaired
+draw (correct iff $u \le p'$) with a fresh one (correct iff
+$u \le p$); since $p' \ge p$, the repaired draw is correct whenever
+the fresh one is.  Every round $k \ge 2$ therefore has masses
+$s' = p'a \ge s$ and $\ell' = (1-p')(1-b) \le \ell$, so its
+accepted stream is at least as pure,
+$\pi' = \ell'/(s'+\ell') \le \pi$, and every constant-$p$ formula
+is an upper bound on realized leak.  The terminal conditional
+error at budget $N$ is a weighted mean of $\pi$ (round 1) and
+$\pi'$ (rounds $\ge 2$) with the $\pi'$-weight strictly increasing
+in $N$; it therefore decreases toward $\pi'$---the favorable break
+of Theorem~\ref{thm:invariance}'s invariance.
+\end{proof}
+
+\subsection{Repair degradation flips the asymmetry}\label{sec:degrade}
+
+Real repairs do not redraw at rate $p$: the retry pool is
+conditioned on rejection, dominated by hard instances, with success
+$q \ll p$.
+
+\begin{definition}[Retry rate]\label{def:q}
+$q := \Pr(\text{attempt } k{+}1 \text{ correct} \mid \text{attempt }
+k \text{ rejected})$, $k \ge 1$.
+\end{definition}
+
+A falsely rejected \emph{correct} solution enters a sub-loop with
+per-round success $q$; conditional on resolution it ends wrong with
+\[
+\pi_q = \frac{(1-q)(1-b)}{qa + (1-q)(1-b)}.
+\]
+
+\begin{theorem}[Modulated exchange rate]\label{thm:flip}
+At the population level, the marginal damage ratio becomes
+\[
+R_q \;=\; \frac{a}{1-b}\cdot\frac{q(1-p)}{p(1-q)}.
+\]
+The asymmetry \emph{flips} (false rejections dominate) iff
+\[
+q < q^\ast \;=\; \frac{(1-b)p}{(1-p)a + (1-b)p}.
+\]
+\end{theorem}
+
+\begin{proof}
+A unit $\varepsilon$ of extra miss rate moves $\varepsilon(1-p)$
+mass of wrong first attempts from ``caught'' (sub-loop wrong with
+probability $\pi_q$) to ``delivered wrong'' (probability 1):
+damage $\varepsilon(1-p)(1-\pi_q)$.  A unit of extra false-rejection
+rate moves $\varepsilon p$ mass of correct first attempts from
+``delivered correct'' to the sub-loop: damage $\varepsilon p \pi_q$.
+Substituting $\pi_q = \ell_q/(s_q+\ell_q)$ with $s_q = qa$,
+$\ell_q = (1-q)(1-b)$ and taking the ratio yields $R_q$; setting
+$R_q = 1$ and solving for $q$ gives $q^\ast$.  For $q=p$ the
+expression recovers Theorem~\ref{thm:asym}.
+\end{proof}
+
+\begin{corollary}[Backfire prediction]\label{cor:backfire}
+If a verifier has $1-a$ non-negligible and measured $q < q^\ast$,
+adding it to the loop reduces terminal accuracy below the
+no-verification baseline, despite any plausible catch rate.  The
+conversion rate of correct solutions into wrong ones is
+$(1-a)\,p\,\pi_q$.
+\end{corollary}
+
+\subsection{Clustering and pooled-rate failure}\label{sec:cluster}
+
+The pooled $(\hat a, \hat b)$ reported by evaluation studies
+summarize attempts across instances.  Two measured phenomena make
+pooled rates poor predictors of terminal leak: (i) retry degradation
+(§\ref{sec:degrade}) multiplies per-retry leak chance from
+$(1-p)(1-b)$ to $(1-q)(1-b)$; (ii) misses cluster on particular
+wrong-solution instances that recur across rounds, so
+instance-level modes with low $b_m$ carry disproportionate mass.
+Both effects push in the same direction; §\ref{sec:exp} quantifies a
+consistent $\approx 3.4\times$ underprediction of leak by
+pooled-rate theory and shows that (i) alone reproduces it, leaving
+(ii) unidentified at this sample size.
+
+\section{Experiments}\label{sec:exp}
+
+\paragraph{Setup.}
+HumanEval \citep{chen2021humaneval}, all 164 problems.  Generator:
+qwen-plus (temperature 1.0, max 1024 tokens), prompted to plan then
+emit a Python block.  Budget $N=5$.  Six arms: \textsf{none}
+(deliver first attempt); \textsf{oracle\_full} (unit tests run in a
+subprocess sandbox; feedback = failing-test traceback);
+\textsf{oracle\_verdict} (tests; feedback = ``failed'' only);
+\textsf{judge\_hetero} (qwen-max judge, isolated context);
+\textsf{judge\_self\_iso} (qwen-plus judge, isolated context);
+\textsf{judge\_self\_ctx} (qwen-plus judge shown the generator's own
+reasoning).  Every attempt is additionally scored by the oracle
+\emph{silently} for instrumentation, so per-arm operating points
+$(\hat a, \hat b)$, per-round success $p_k$, and leak/terminal
+outcomes are all measured directly.  All 984 runs completed; total
+cost 1.64M tokens.
+
+\begin{table}[t]
+\centering\small
+\caption{Main results ($n{=}164$ per arm; 95\% Wilson CIs).
+$\pi_{\mathrm{pred}}$ from Theorem~\ref{thm:invariance} with
+measured $\hat p_1,\hat a,\hat b$;
+$\pi_{\mathrm{obs}}$ = error conditional on delivery.}
+\label{tab:main}
+\begin{tabular}{lccccccccc}
+\toprule
+Arm & $\hat p_1$ & $\hat a$ & $\hat b$ & Acc. & Leak &
+Unres. & $\mathbb{E}[k]$ & $\pi_{\mathrm{pred}}$ &
+$\pi_{\mathrm{obs}}$\\
+\midrule
+none            & .91 & --   & --   & .91 & .091 & .000 & 1.00 & --   & --\\
+oracle\_full    & .89 & 1.00 & 1.00 & .98 & .000 & .024 & 1.27 & .000 & .000\\
+oracle\_verdict & .90 & 1.00 & 1.00 & .96 & .000 & .037 & 1.29 & .000 & .000\\
+judge\_hetero   & .90 & .78  & .77  & .85 & .098 & .049 & 1.52 & .030 & .103\\
+judge\_self\_iso& .90 & .78  & .74  & .82 & .116 & .061 & 1.51 & .037 & .123\\
+judge\_self\_ctx& .90 & .86  & .86  & .87 & .061 & .067 & 1.45 & .018 & .065\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Oracle verification: theory confirmed exactly}
+Unit-test verification lifts accuracy from .91 to .98 at $+27\%$
+attempts ($\mathbb{E}[k]=1.27$), with leak collapsing from $9.1\%$
+to exactly $0.0\%$, as Theorem~\ref{thm:loop} requires for $b=1$.
+Within its own first attempts the loop never loses a correct
+solution and rescues $14$/$10$ wrong ones
+(Table~\ref{tab:within}).  This is the clean empirical instantiation
+of Corollary~\ref{cor:calibrate}: at $a = 1$ its $q$-qualification
+is vacuous (there are no false rejections to convert), and budget
+spent on catch rate pays off at near-parity cost.
+
+\subsection{LLM judges lose correct solutions, as the degradation
+theorem predicts}
+All three judge arms land \emph{below} the no-verification baseline
+(.85/.82/.87 vs.\ .91) despite pooled operating points that look
+respectable.  Cross-arm comparisons, however, are confounded by
+first-draw sampling: each arm drew its first attempts independently,
+and $\hat p_1$ ranges $.89$--$.91$ (\textsf{none} happened to draw
+the best of the six).  The causal comparison pairs each arm's
+terminal outcome against \emph{its own} first attempt on the same
+task.
+
+\begin{table}[t]
+\centering\small
+\caption{Within-arm pairing: terminal outcome vs.\ the same arm's
+first attempt, by task (McNemar exact).  ``Lost'' = first attempt
+correct, terminal not delivered-correct; ``rescued'' = first attempt
+wrong, terminal correct.  $p$: unresolved counted as failure (the
+paper's accuracy convention); $p_{\mathrm{del}}$: unresolved tasks
+excluded.  Effect = terminal accuracy minus own first-attempt
+accuracy.}
+\label{tab:within}
+\begin{tabular}{lcccccc}
+\toprule
+Arm & Lost & Rescued & Net & $p$ & $p_{\mathrm{del}}$ & Effect\\
+\midrule
+oracle\_full      & 0  & 14 & $+14$ & $.0001$ & $.0001$ & $+8.5$pp\\
+oracle\_verdict   & 0  & 10 & $+10$ & $.002$  & $.002$  & $+6.1$pp\\
+judge\_hetero     & 10 & 2  & $-8$  & $.039$  & $.29$   & $-4.9$pp\\
+judge\_self\_iso  & 14 & 2  & $-12$ & $.004$  & $.013$  & $-7.3$pp\\
+judge\_self\_ctx  & 10 & 6  & $-4$  & $.46$   & $1.00$  & $-2.4$pp\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:within} is the paper's cleanest contrast.  Oracle
+verification never loses a correct solution (a unit acceptance rate
+never re-rolls correct work) and rescues $14$/$10$ wrong first
+attempts.  The isolated self-judge does the reverse, significantly
+under both conventions ($p = .004$ and $.013$)---the one backfire
+robust to how unresolved tasks are counted.  The cross-capability
+judge is significant only under the accuracy convention (it fails
+a Bonferroni correction across the three judge arms and loses
+significance when unresolved tasks are excluded); the
+context-sharing judge's deficit is a null.  We accordingly claim a
+significant backfire only for \textsf{judge\_self\_iso}.
+
+The mechanism is measured directly: false rejections
+send correct solutions into a retry sub-loop whose conditional
+success is $q \approx 0.27$--$0.39$ (Table~\ref{tab:pk}), so
+correct$\to$wrong conversion occurs at the rate
+Corollary~\ref{cor:backfire} predicts, $(1-\hat a)\hat p_1
+\hat\pi_q$ with $q = \hat p_2$: predicted 15.7/5.6/10.0 conversions
+for \textsf{self\_iso}/\textsf{self\_ctx}/\textsf{hetero} vs.\
+observed 12/6/6---the correct order and the correct arm ranking.
+Predictions are expectations; with ${\sim}30$ expected events the
+binomial noise is ${\pm}5$.  (Measured $\hat p_2$ pools rejections
+of genuinely wrong and of correct attempts---55 vs.\ 39 rejection
+events in \textsf{hetero}---so it approximates, rather than
+identifies, the correct-solution sub-loop rate; cf.\ Limitations,
+§\ref{sec:discussion}.)  The flip thresholds are
+$q^\ast \approx 0.75/0.59/0.73$; measured $q$ lies far below all of
+them, so the backfire is predicted from parameters alone, before
+any end-to-end run.
+
+\begin{table}[t]
+\centering\small
+\caption{Per-round conditional success $p_k$ (rows: arms;
+$n\ge10$). $q := \hat p_2$ (second-round conditional success), the
+quantity used in §\ref{sec:exp}; \textsf{judge\_self\_ctx}'s
+$p_5 = .00$ rests on 11 rounds in a heavily depleted pool.}
+\label{tab:pk}
+\begin{tabular}{lccccc}
+\toprule
+Arm & $p_1$ & $p_2$ & $p_3$ & $p_4$ & $p_5$\\
+\midrule
+oracle\_full    & .89 ($n{=}164$) & .33 (18) & .25 (12) & -- & --\\
+oracle\_verdict & .90 (164) & .19 (16) & .23 (13) & .10 (10) & --\\
+judge\_hetero   & .90 (164) & .39 (36) & .42 (24) & .13 (15) & .45 (11)\\
+judge\_self\_iso& .90 (164) & .27 (37) & .37 (19) & .35 (17) & .40 (10)\\
+judge\_self\_ctx& .90 (164) & .30 (30) & .32 (19) & .29 (14) & .00 (11)\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Single-shot verification helps; retries eat the gain}
+\label{sec:budget}
+Truncating every run at budget $N$ and recomputing
+conditional-on-delivery error traces the loop's purity curve
+(Table~\ref{tab:budget}).
+
+\begin{table}[t]
+\centering\small
+\caption{Conditional-on-delivery error $\pi$ by budget $N$
+(runs truncated at $N$ rounds).  The no-verification baseline
+(deliver the first attempt unverified) has $\pi = .091$.}
+\label{tab:budget}
+\begin{tabular}{lccccc}
+\toprule
+Arm & $N{=}1$ & $N{=}2$ & $N{=}3$ & $N{=}4$ & $N{=}5$\\
+\midrule
+judge\_hetero    & .031 & .050 & .074 & .092 & .103\\
+judge\_self\_iso & .024 & .103 & .109 & .123 & .123\\
+judge\_self\_ctx & .022 & .055 & .067 & .065 & .065\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Two readings.  First, at $N=1$ every judge arm's delivered stream is
+far purer than the no-verification baseline ($.022$--$.031$ vs.\
+$.091$), exactly as Theorem~\ref{thm:decorr} requires: each arm's
+pooled operating point lies above the chance diagonal ($\hat a +
+\hat b = 1.52$--$1.72$), so single-shot verification helps.
+Second, purity degrades with budget: retries draw at $q \ll p$, so
+each additional round admits increasingly impure accepted mass.
+Budget is thus \emph{not neutral}: Theorem~\ref{thm:invariance}'s
+invariance holds only when retries redraw at the generator's
+rate---Proposition~\ref{prop:delta} shows it breaking favorably
+when repairs improve, the degradation of §\ref{sec:degrade}
+unfavorably when they do not---and the sweep realizes the
+unfavorable side, where added budget \emph{actively} worsens the
+delivered stream.  For \textsf{judge\_self\_iso} the
+first retry alone erases the entire single-shot gain ($\pi$:
+$.024 \to .103$, crossing the baseline $.091$).  Budget, like
+strictness, is a $q$-dependent decision (G2, §\ref{sec:discussion}).
+
+\subsection{Pooled operating points underpredict leak by
+$\approx3.4\times$---fully explained by degraded retries}
+Using measured pooled $(\hat a,\hat b)$ and $\hat p_1$,
+Theorem~\ref{thm:invariance} predicts conditional-on-delivery error
+of 3.0\%/3.7\%/1.8\%; observed are 10.3\%/12.3\%/6.5\%---per-arm
+ratios of 3.4/3.3/3.6, geometric mean $3.4$ (task-level bootstrap
+95\% CI $[2.1, 4.7]$, far from 1) (Table~\ref{tab:main}, last two
+columns).  What does this gap mean?  A degradation-only model---the
+measured per-round trajectory $p_k$ (Table~\ref{tab:pk}) with
+constant $(\hat a, \hat b)$, no instance-level clustering---reproduces
+it in full: predicted $\pi$ of .106/.134/.068 vs.\ observed
+.103/.123/.065, slightly \emph{over}predicting every arm.  Degraded
+retries are thus not merely the dominant channel but a
+\emph{sufficient} one: the data require no clustering channel.  The
+precise attribution share, however, is a modeling convention rather
+than a measurement: across the two conventions we implement
+(retries at constant $q = \hat p_2$ vs.\ at the measured $p_k$;
+per-round survival) it spans 98--128\%, and at this sample size
+degradation and clustering are not separably identified; a
+per-instance binomial overdispersion check
+($\chi^2/\mathrm{df} = 1.3$--$2.2$ across judge arms; the same wrong
+instances do leak at $k{=}1$ through $k{=}5$) is directionally
+consistent with mild miss clustering but does not separate the
+channels.  The leak composition confirms that degradation carries
+the gap: of the 16 leaks in \textsf{judge\_hetero}, 6 arise from
+falsely rejected \emph{correct} first attempts---the conversion
+channel of Theorem~\ref{thm:flip}---and 10 from wrong first attempts
+that survived repeated verification; in the two self-judge arms the
+conversion channel is the majority (12/19 and 6/10).
+Instance-level modeling, as in \citet{dorner2026rocnreroll}, remains
+a necessity for terminal-error prediction; but the first-order
+lesson is simpler---pooled rates fail because they mask the
+per-round trajectory, so measure $q$.
+
+\subsection{Actionable feedback repairs better (matched pools)}
+\textsf{oracle\_full} vs.\ \textsf{oracle\_verdict} share the same
+retry pool (first-attempt-wrong problems), isolating feedback
+content; with $b=1$ the pool is exactly the wrong-first-attempt
+tasks, so this comparison does not inherit the mixed-pool
+approximation of the judge arms.  Traceback feedback raises
+second-round repair success
+from .19 to .33 ($+74\%$ relative; $3/16$ vs.\ $6/18$ events,
+Fisher exact $p = 0.45$) and lowers unresolved rate (.024 vs.\
+.037).  The sample is small, so we read this as \emph{suggestive}
+evidence on a literature tension rather than an adjudication:
+\citet{stechly2024selfverify} found feedback detail immaterial with
+sound verifiers on formal tasks, while Reflexion-style systems
+premise feedback-driven repair; our $\delta$-framework
+(Proposition~\ref{prop:delta}) can accommodate both regimes, and
+code repair appears to sit in the $\delta>0$ regime.
+
+\subsection{An honest negative result on context-induced collapse}
+Contrary to the collapse motivation of §\ref{sec:mixture}, the
+judge \emph{shown the generator's own reasoning}
+(\textsf{judge\_self\_ctx}) was slightly \emph{more} accurate at
+both operating points than the isolated same-model judge
+($\hat a = .86$ vs.\ $.78$; $\hat b = .86$ vs.\ $.74$) and delivered
+better terminal accuracy (.87 vs.\ .82).  These gaps are
+non-significant---the $\hat b$ Wilson intervals overlap
+($[.76,.92]$ vs.\ $[.63,.83]$)---and the context arm's within-arm
+deficit is the weakest of the three (net $-4$, $p = 0.46$; $p =
+1.0$ counting only delivered outcomes), so
+we claim no evidence of context-induced collapse but cannot exclude
+a moderate harmful effect either.  In this setting,
+context-sharing did not corrupt verification; collapse phenomena
+appear confined to self-\emph{correction} loops
+\citep{stechly2024selfverify}, not verifier contexts.  We report
+this as a boundary condition on the theory: the correlation that
+destroys verification loops must be measured
+(Theorem~\ref{thm:decorr}), not assumed.
+
+\section{Discussion}\label{sec:discussion}
+
+\paragraph{Design guidelines.}
+\textbf{G1: oracle-first.}  Wherever a deterministic check exists
+(tests, compilers, schemas), attach it to the verifier: it removes
+leak entirely at bounded cost.  \textbf{G2: strictness must be
+earned by repairability.}  Harsh verification is safe when retries
+are cheap and successful ($q$ high); when repairs are degraded,
+Corollary~\ref{cor:calibrate} inverts---acceptance must be protected.
+Measure $q$ (one rejected-batch pilot) before choosing a verifier's
+operating point \emph{or its budget} (§\ref{sec:budget}).
+\textbf{G3: never trust pooled operating points}
+for terminal-error prediction; report instance-level effects.
+\textbf{G4: engineer feedback actionability ($\delta$)}---it is the
+cheapest lever on repair success.
+
+\paragraph{Human analogy.}
+The same structure appears in human peer review: independent review
+layers compose multiplicatively (the ``Swiss cheese'' model of
+accident analysis), reviewer strictness is affordable exactly when
+authors can repair well, and nitpicking a correct solution has its
+price paid in rework---sometimes turning a working change into a
+broken one, our conversion mechanism in miniature.
+
+\paragraph{Limitations.}
+Single generator family (Qwen) and one benchmark (HumanEval, 164
+problems); judge ``heterogeneity'' is cross-capability, not
+cross-family; leak rates rest on 10--19 instances per judge arm.
+The feedback ablation rests on 3 vs.\ 6 repair events
+(Fisher $p = 0.45$) and is suggestive only (its retry pool, unlike
+the judge arms', is cleanly identified); the retry rate $q$ for
+the judge arms is measured from a mixed rejection pool and only
+approximates the correct-solution sub-loop rate; the
+context-collapse negative
+result is one setting with overlapping confidence intervals.  The
+theory's identifiability assumptions (within-mode independence) are
+idealizations.  The artifact code supports replication and
+extension.
+
+\section{Conclusion}
+
+Verification is not free reliability.  Its benefit is governed by a
+computable exchange rate between the verifier's two error types; its
+danger---demonstrated here empirically at the rates the theory
+predicts---appears when degraded repairs let false rejections
+convert correct work into wrong.  The practical summary fits in one
+sentence: \emph{spend your verifier budget on catching errors, but
+first measure how well your generator recovers from being told it
+was wrong.}
+
+\paragraph{Reproducibility.}
+Experiment code, prompts, per-attempt logs (984 runs, 1.64M tokens),
+and analysis scripts are released at
+\url{https://github.com/dianxia/verifier-backfire}.
+
+\begin{thebibliography}{20}
+
+\bibitem[Chen et al.(2021)]{chen2021humaneval}
+M.~Chen, J.~Tworek, H.~Jun, et al.
+\newblock Evaluating large language models trained on code.
+\newblock \emph{arXiv:2107.03374}, 2021.
+
+\bibitem[Dorner et al.(2026)]{dorner2026rocnreroll}
+F.~E. Dorner, Y.~Chen, A.~F. Cruz, F.~Yang.
+\newblock {ROC}-n-reroll: How verifier imperfection affects
+test-time scaling.
+\newblock \emph{ICLR}, 2026. arXiv:2507.12399.
+
+\bibitem[Huang et al.(2024)]{huang2024cannot}
+J.~Huang, X.~Chen, S.~Mishra, H.~S. Zheng, A.~W. Yu, X.~Song,
+D.~Zhou.
+\newblock Large language models cannot self-correct reasoning yet.
+\newblock \emph{ICLR}, 2024.
+
+\bibitem[Huang et al.(2025)]{huang2025bestofn}
+A.~Huang, et al.
+\newblock Is best-of-$n$ the best of them? Coverage, scaling, and
+optimality in inference-time alignment.
+\newblock \emph{arXiv:2503.21878}, 2025.
+
+\bibitem[Kamoi et al.(2024)]{kamoi2024when}
+R.~Kamoi, Y.~Zhang, N.~Zhang, J.~Han, R.~Zhang.
+\newblock When can {LLM}s actually correct their own mistakes? {A}
+critical survey of self-correction of {LLM}s.
+\newblock \emph{TACL}, 12:1417--1440, 2024.
+
+\bibitem[Lightman et al.(2024)]{lightman2024verify}
+H.~Lightman, V.~Kosaraju, Y.~Burda, et al.
+\newblock Let's verify step by step.
+\newblock \emph{ICLR}, 2024.
+
+\bibitem[Madaan et al.(2023)]{madaan2023selfrefine}
+A.~Madaan, N.~Tandon, P.~Gupta, et al.
+\newblock Self-refine: Iterative refinement with self-feedback.
+\newblock \emph{NeurIPS}, 2023.
+
+\bibitem[Plesner et al.(2026)]{plesner2026imperfect}
+A.~Plesner, F.~Guzm\'an, A.~Athalye.
+\newblock An imperfect verifier is good enough: Learning with noisy
+rewards.
+\newblock \emph{arXiv:2604.07666}, 2026.
+
+\bibitem[Shinn et al.(2023)]{shinn2023reflexion}
+N.~Shinn, F.~Cassano, E.~Berman, A.~Gopinath, K.~Narasimhan,
+S.~Yao.
+\newblock Reflexion: Language agents with verbal reinforcement
+learning.
+\newblock \emph{NeurIPS}, 2023.
+
+\bibitem[Stechly et al.(2025)]{stechly2024selfverify}
+K.~Stechly, K.~Valmeekam, S.~Kambhampati.
+\newblock On the self-verification limitations of large language
+models on reasoning and planning tasks.
+\newblock \emph{ICLR}, 2025. arXiv:2402.08115.
+
+\bibitem[Wang et al.(2023)]{wang2023selfconsistency}
+X.~Wang, J.~Wei, D.~Schuurmans, et al.
+\newblock Self-consistency improves chain of thought reasoning in
+language models.
+\newblock \emph{ICLR}, 2023.
+
+\bibitem[Wu et al.(2026)]{wu2026cybercorrect}
+Y.~Wu, Y.~Liu, Y.~Shu.
+\newblock {CyberCorrect}: A cybernetic framework for closed-loop
+self-correction in large language models.
+\newblock \emph{arXiv:2605.17305}, 2026.
+
+\bibitem[Zheng et al.(2023)]{zheng2023judging}
+L.~Zheng, W.~Chiang, Y.~Sheng, et al.
+\newblock Judging {LLM}-as-a-judge with {MT}-Bench and Chatbot
+Arena.
+\newblock \emph{NeurIPS Datasets and Benchmarks}, 2023.
+
+\end{thebibliography}
+
+\end{document}
