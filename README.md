@@ -76,7 +76,7 @@ Notes:
          Generation--Verification--Repair Loops for LLMs},
   author={Guidong Chen},
   year={2026},
-  note={arXiv preprint (to appear)}
+  note={Preprint. Code and full logs: https://github.com/dianxia/verifier-backfire}
 }
 ```
 
