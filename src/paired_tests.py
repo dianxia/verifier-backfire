@@ -17,7 +17,9 @@ from collections import defaultdict
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-JUDGE_ARMS = ["judge_self_iso", "judge_hetero", "judge_self_ctx"]
+JUDGE_ARMS = ["judge_self_iso", "judge_hetero", "judge_self_ctx",
+              "judge_deepseek_iso", "judge_glm_iso",
+              "judge_self_iso_thinking"]
 LOOP_ARMS = ["oracle_full", "oracle_verdict"] + JUDGE_ARMS
 
 
@@ -103,6 +105,10 @@ def main() -> None:
     for arm in JUDGE_ARMS:
         b = c = 0
         for tid, nr in by_arm["none"].items():
+            if tid not in by_arm[arm]:
+                print(f"  WARNING: {tid} missing from {arm} "
+                      "(incomplete run); skipped")
+                continue
             ar = by_arm[arm][tid]
             n_ok = bool(nr["delivered_correct"])
             a_ok = bool(ar["delivered_correct"])

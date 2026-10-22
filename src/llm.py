@@ -3,6 +3,10 @@
 
 Key loading order: env var -> project .env (repo root).
 The key is never printed.
+
+chat() returns (content, usage) where usage = {'prompt_tokens',
+'completion_tokens', 'total_tokens', 'model'}; 'model' is the
+API-reported model identifier (for version pinning).
 """
 import os
 import time
@@ -47,22 +51,31 @@ def chat(
     max_tokens: int = 1024,
     temperature: float = 1.0,
     retries: int = 4,
-) -> tuple[str, int]:
-    """One chat completion. Returns (content, total_tokens)."""
+    enable_thinking: bool = False,
+) -> tuple[str, dict]:
+    """One chat completion. Returns (content, usage dict).
+
+    enable_thinking=True requests reasoning mode: the answer arrives
+    in `content`, the chain of thought in `reasoning_content` (not
+    returned here).
+    """
     key = _load_key()
     last_err = None
     for i in range(retries):
         try:
+            payload = {
+                "model": model,
+                "messages": messages,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+            }
+            if enable_thinking:
+                payload["enable_thinking"] = True
             r = httpx.post(
                 API_URL,
                 headers={"Authorization": f"Bearer {key}"},
-                json={
-                    "model": model,
-                    "messages": messages,
-                    "max_tokens": max_tokens,
-                    "temperature": temperature,
-                },
-                timeout=180,
+                json=payload,
+                timeout=300,
             )
             if r.status_code in (429, 500, 502, 503, 504):
                 last_err = RuntimeError(f"HTTP {r.status_code}")
@@ -70,11 +83,16 @@ def chat(
                 continue
             r.raise_for_status()
             data = r.json()
-            content = data["choices"][0]["message"]["content"]
-            tokens = int(
-                data.get("usage", {}).get("total_tokens", 0),
-            )
-            return content, tokens
+            content = data["choices"][0]["message"]["content"] or ""
+            u = data.get("usage", {}) or {}
+            usage = {
+                "prompt_tokens": int(u.get("prompt_tokens", 0) or 0),
+                "completion_tokens": int(
+                    u.get("completion_tokens", 0) or 0),
+                "total_tokens": int(u.get("total_tokens", 0) or 0),
+                "model": data.get("model", model),
+            }
+            return content, usage
         except Exception as e:  # noqa: BLE001
             last_err = e
             time.sleep(2 ** (i + 1))

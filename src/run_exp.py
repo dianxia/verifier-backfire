@@ -15,12 +15,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from .loop import ARMS, run_gvr
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_PATH = os.path.join(_ROOT, "data", "humaneval.jsonl")
+DEFAULT_DATA = os.path.join(_ROOT, "data", "humaneval.jsonl")
 
 
-def load_tasks(limit: int) -> list[dict]:
+def load_tasks(path: str, limit: int) -> list[dict]:
     tasks = []
-    with open(DATA_PATH, encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         for line in f:
             tasks.append(json.loads(line))
             if len(tasks) >= limit:
@@ -36,6 +36,11 @@ def main() -> None:
         help="Comma list or 'all'",
     )
     ap.add_argument("--limit", type=int, default=164)
+    ap.add_argument(
+        "--data",
+        default=DEFAULT_DATA,
+        help="Task dataset (jsonl)",
+    )
     ap.add_argument("--threads", type=int, default=8)
     ap.add_argument(
         "--out",
@@ -47,7 +52,7 @@ def main() -> None:
         list(ARMS.keys()) if args.arms == "all"
         else [a.strip() for a in args.arms.split(",") if a.strip()]
     )
-    tasks = load_tasks(args.limit)
+    tasks = load_tasks(args.data, args.limit)
 
     # resume: skip (arm, task_id) already in the checkpoint file
     done = set()
@@ -56,6 +61,8 @@ def main() -> None:
             for line in f:
                 try:
                     r = json.loads(line)
+                    if "error" in r:
+                        continue  # failed jobs are retried on resume
                     done.add((r["arm"], r["task_id"]))
                 except json.JSONDecodeError:
                     continue

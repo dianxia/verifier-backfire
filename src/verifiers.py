@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Verifier arms. Each verifier returns
-(verdict: 'accept'|'reject', feedback: str, raw_log: str, tokens: int).
+(verdict: 'accept'|'reject', feedback: str, raw_log: str, usage: dict)
+where usage = {'total_tokens': int, 'model': str}.
 
 Arms:
   oracle_full    unit tests, feedback = failing test traceback
@@ -8,6 +9,13 @@ Arms:
   judge_hetero   different-capability judge model (qwen-max), isolated ctx
   judge_self_iso same generator model (qwen-plus), isolated context
   judge_self_ctx same generator model, sees its own reasoning (collapse arm)
+  judge_deepseek_iso / judge_glm_iso  cross-family judges; both are
+                 reasoning models, so they need a larger max_tokens
+                 budget for thinking (set in loop.ARMS).
+  judge_self_iso_thinking  same-family reasoning control (qwen-plus
+                 with enable_thinking, 4,096-token budget): bridges
+                 the family/capability confound of the cross-family
+                 arms.
 """
 import re
 
@@ -51,44 +59,60 @@ def _parse_verdict(text: str) -> str | None:
 
 
 def oracle_verify(task: dict, code: str, mode: str):
-    """Unit-test oracle. mode: 'full' (traceback feedback) or 'verdict'."""
+    """Unit-test oracle. mode: 'full' (traceback feedback) or 'verdict'.
+
+    Returns (verdict, feedback, raw_output, usage).
+    """
     passed, output = run_oracle(
         code, task["test"], task["entry_point"],
     )
+    usage = {"total_tokens": 0, "model": "unit-test"}
     if passed:
-        return "accept", "", output, 0
+        return "accept", "", output, usage
     if mode == "verdict":
         return (
             "reject",
             "Your solution failed the tests.",
             output,
-            0,
+            usage,
         )
     return (
         "reject",
         "Your solution failed the tests. The test harness produced "
         f"the following error:\n{output[-1200:]}",
         output,
-        0,
+        usage,
     )
 
 
 def llm_judge_verify(task: dict, code: str, gen_text: str,
-                     model: str, ctx: str):
-    """LLM judge with strict-format retries."""
+                     model: str, ctx: str,
+                     max_tokens: int = JUDGE_MAX_TOKENS,
+                     thinking: bool = False):
+    """LLM judge with strict-format retries.
+
+    thinking=True serves the judge in reasoning mode
+    (enable_thinking); the formatted answer arrives in `content`,
+    the chain of thought stays in `reasoning_content` upstream.
+
+    Returns (verdict, feedback, raw_log, usage).
+    """
     messages = [
         {"role": "user", "content": _judge_prompt(task, code, gen_text, ctx)},
     ]
     tokens = 0
     raw = ""
+    api_model = model
     for attempt in range(3):
-        text, tok = chat(
+        text, u = chat(
             model,
             messages,
-            max_tokens=JUDGE_MAX_TOKENS,
+            max_tokens=max_tokens,
             temperature=0.2,
+            enable_thinking=thinking,
         )
-        tokens += tok
+        api_model = u.get("model", model)
+        tokens += u.get("total_tokens", 0)
         raw = text
         verdict = _parse_verdict(text)
         if verdict:
@@ -103,7 +127,8 @@ def llm_judge_verify(task: dict, code: str, gen_text: str,
                 )
             else:
                 feedback = ""
-            return verdict, feedback, raw, tokens
+            return verdict, feedback, raw, {
+                "total_tokens": tokens, "model": api_model}
         messages = messages + [
             {"role": "assistant", "content": text},
             {"role": "user", "content":
@@ -114,4 +139,4 @@ def llm_judge_verify(task: dict, code: str, gen_text: str,
     return "reject", (
         "Your solution was rejected (reviewer response could not be "
         "parsed)."
-    ), raw, tokens
+    ), raw, {"total_tokens": tokens, "model": api_model}

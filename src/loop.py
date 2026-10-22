@@ -4,14 +4,30 @@
 Every attempt's ground-truth correctness is measured silently by the
 oracle (regardless of which arm's verifier decides accept/reject), so
 empirical (a, b) operating points can be estimated per arm.
+
+Rerun (v2) instrumentation changes:
+- GEN_MAX_TOKENS raised 1024 -> 8192: the original cap truncated a
+  large share of retry-round completions (retry prompts regenerate the
+  full plan + fixed code and need more headroom).
+- per-attempt prompt/completion token counts are recorded separately;
+- an ast.parse health flag (`parse_ok`) is recorded per attempt;
+- the API-reported model identifiers are stored per run (version
+  pinning);
+- two cross-family judge arms (deepseek-v4-pro, glm-5.2) are added;
+  both are reasoning models and get a larger judge max_tokens budget.
+- a same-family reasoning-judge control arm (judge_self_iso_thinking:
+  qwen-plus with enable_thinking, 4,096-token verdict budget) bridges
+  the family x capability confound of the cross-family arms.
 """
+import ast
+
 from .llm import chat
 from .sandbox import extract_code, run_oracle
 from .verifiers import llm_judge_verify, oracle_verify
 
 GEN_MODEL = "qwen-plus"
 GEN_TEMPERATURE = 1.0
-GEN_MAX_TOKENS = 1024
+GEN_MAX_TOKENS = 8192
 
 ARMS: dict[str, dict] = {
     "none": {"verifier": "none"},
@@ -19,12 +35,28 @@ ARMS: dict[str, dict] = {
     "oracle_verdict": {"verifier": "oracle", "mode": "verdict"},
     "judge_hetero": {
         "verifier": "llm", "model": "qwen-max", "ctx": "iso",
+        "judge_max_tokens": 512,
     },
     "judge_self_iso": {
         "verifier": "llm", "model": "qwen-plus", "ctx": "iso",
+        "judge_max_tokens": 512,
     },
     "judge_self_ctx": {
         "verifier": "llm", "model": "qwen-plus", "ctx": "ctx",
+        "judge_max_tokens": 512,
+    },
+    "judge_deepseek_iso": {
+        "verifier": "llm", "model": "deepseek-v4-pro", "ctx": "iso",
+        "judge_max_tokens": 4096,  # reasoning model: budget for thinking
+    },
+    "judge_glm_iso": {
+        "verifier": "llm", "model": "glm-5.2", "ctx": "iso",
+        "judge_max_tokens": 4096,  # reasoning model
+    },
+    "judge_self_iso_thinking": {
+        "verifier": "llm", "model": "qwen-plus", "ctx": "iso",
+        "judge_max_tokens": 4096,  # reasoning mode: budget for thinking
+        "judge_thinking": True,    # bridge: same family x reasoning x 4096
     },
 }
 
@@ -50,6 +82,16 @@ def _gen_messages(task: dict, attempt: int, prev_code: str | None,
     return [{"role": "user", "content": content}]
 
 
+def _parse_ok(code: str) -> bool:
+    if not code:
+        return False
+    try:
+        ast.parse(code)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def run_gvr(task: dict, arm_name: str) -> dict:
     """Run one (task, arm). Returns the full instrumentation record."""
     arm = ARMS[arm_name]
@@ -58,17 +100,20 @@ def run_gvr(task: dict, arm_name: str) -> dict:
     feedback = None
     delivered_correct = None
     resolved = False
+    gen_model_api_id = None
+    judge_model_api_id = None
 
     for k in range(1, BUDGET + 1):
         # ---- generate ----
-        text, tok = chat(
+        text, gu = chat(
             GEN_MODEL,
             _gen_messages(task, k, prev_code, feedback),
             max_tokens=GEN_MAX_TOKENS,
             temperature=GEN_TEMPERATURE,
         )
+        if gen_model_api_id is None:
+            gen_model_api_id = gu.get("model")
         code = extract_code(text, task["entry_point"])
-        gen_tokens = tok
 
         # ---- silent ground truth (always) ----
         gt_pass, gt_out = run_oracle(
@@ -76,15 +121,19 @@ def run_gvr(task: dict, arm_name: str) -> dict:
         )
 
         # ---- arm-specific verdict ----
-        verdict, fb, raw, jtok = "accept", "", "", 0
+        verdict, fb, raw, ju = "accept", "", "", {"total_tokens": 0}
         if arm["verifier"] == "oracle":
-            verdict, fb, raw, jtok = oracle_verify(
+            verdict, fb, raw, ju = oracle_verify(
                 task, code, arm["mode"],
             )
         elif arm["verifier"] == "llm":
-            verdict, fb, raw, jtok = llm_judge_verify(
+            verdict, fb, raw, ju = llm_judge_verify(
                 task, code, text, arm["model"], arm["ctx"],
+                max_tokens=arm.get("judge_max_tokens", 512),
+                thinking=arm.get("judge_thinking", False),
             )
+            if judge_model_api_id is None:
+                judge_model_api_id = ju.get("model")
         # arm "none": always accept the first attempt
 
         attempts.append({
@@ -96,8 +145,11 @@ def run_gvr(task: dict, arm_name: str) -> dict:
             "verdict": verdict,
             "feedback": fb[:1500],
             "judge_raw": raw[:1000],
-            "gen_tokens": gen_tokens,
-            "judge_tokens": jtok,
+            "gen_tokens": gu.get("total_tokens", 0),
+            "gen_prompt_tokens": gu.get("prompt_tokens", 0),
+            "gen_completion_tokens": gu.get("completion_tokens", 0),
+            "parse_ok": _parse_ok(code),
+            "judge_tokens": ju.get("total_tokens", 0),
         })
 
         if verdict == "accept":
@@ -112,6 +164,10 @@ def run_gvr(task: dict, arm_name: str) -> dict:
     return {
         "arm": arm_name,
         "task_id": task["task_id"],
+        "gen_model": GEN_MODEL,
+        "gen_model_api_id": gen_model_api_id,
+        "judge_model": arm.get("model"),
+        "judge_model_api_id": judge_model_api_id,
         "n_attempts": n_attempts,
         "resolved": resolved,
         "delivered_correct": delivered_correct,

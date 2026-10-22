@@ -1,0 +1,1216 @@
+\documentclass[10pt]{article}
+\usepackage{tmlr}
+% \usepackage[accepted]{tmlr}   % camera-ready
+% \usepackage[preprint]{tmlr}   % de-anonymized (for preprint servers)
+
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage[hidelinks]{hyperref}
+\usepackage{microtype}
+
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}{Lemma}
+\newtheorem{corollary}{Corollary}
+\newtheorem{proposition}{Proposition}
+\newtheorem{definition}{Definition}
+\newtheorem{remark}{Remark}
+
+\title{When Verifiers Backfire: A Cost--Correctness Theory of
+Generation--Verification--Repair Loops for LLMs}
+
+\author{\name Anonymous Author \email anonymous@example.com \\
+      \addr Anonymous Institution}
+
+\def\month{10}
+\def\year{2026}
+\def\openreview{\url{https://openreview.net/forum?id=XXXX}}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Test-time verification is becoming a standard component of LLM
+agent systems: a generator produces an artifact, a verifier
+accepts or rejects it, and rejections trigger repair.  We give a
+cost--correctness theory of this generation--verification--repair
+(GVR) loop---including a correction of a tempting over-reading of
+it---and stress both in a two-benchmark study with full
+silent-oracle instrumentation: one generator (qwen-plus), six LLM
+judge configurations spanning three model families, unit-test
+oracles, budget $N{=}5$, $164 \times 9$ HumanEval and $247 \times 9$
+MBPP runs, every attempt ground-truth-scored.  On the theory side, misses hurt
+final precision $R = a/(1-b)$ times as much per unit as false
+rejections when retries redraw at the generator's rate; degraded
+retries ($q < q^\ast$) flip that ranking; and---the
+correction---per-event dominance of false rejections does not by
+itself imply backfire: the loop backfires iff its delivered-correct
+probability $A_N$ falls below the deliver-first-attempt baseline,
+equivalent in the steady state to $R_q < (1-a)/b$.  Empirically the
+backfire is real, severe, and sharply patterned by judge
+configuration.  Same-family judges lose correct work---net $-15$
+correct solutions for the isolated self-judge on HumanEval
+($p=.0007$), $-10$ for the cross-capability judge on both
+benchmarks---while neither cross-family configuration
+(deepseek-v4-pro, glm-5.2) shows a reliable negative effect, and
+glm-5.2 trends positive on MBPP ($+8$, nominal $p=.039$).  A
+same-family reasoning-judge control dissociates the axes: the
+collapse signature persists within the family, but the
+significant losses are confined to the non-reasoning judges.
+The mechanism is not broken repair: retries succeed at
+$q=.47$--$.95$, but same-family judges' acceptance of correct work
+collapses across rounds (round 1: $.75$--$.87$; round $\ge 4$:
+$.00$--$.36$) although the judges cannot see the round---the
+empirical signature of instance-persistent verifier--generator
+correlation, one of two failure regimes our theory separates; the
+other, priced by the flip condition, governs the cross-capability
+arm, and the corrected condition, evaluated at the experiment's
+budget, signs all twelve judge-benchmark cells.  Oracle verification
+never loses a correct solution ($+20$/$+17$ rescues on MBPP,
+$p<10^{-4}$; leak exactly zero wherever $b{=}1$), and fully paired
+feedback and verifier-context ablations yield no statistically
+reliable effect.  The engineering lesson is sharp: whether a loop
+purifies or grinds is governed by the verifier's configuration
+relative to the generator---family-associated in our arms---and
+its acceptance persistence on resubmitted work---measure both
+before trusting any verifier.
+\end{abstract}
+
+\section{Introduction}\label{sec:intro}
+
+Production LLM agent systems increasingly wrap generation in a
+verification loop: an executor produces an artifact, a verifier
+judges it, rejections trigger repair, and the loop terminates when
+the verifier accepts or the budget runs out.  This
+generation--verification--repair (GVR) pattern underlies executor/
+verifier pipelines, LLM-as-judge filters, and test-driven agent
+loops.  The engineering question it raises is sharp and often
+ignored: \emph{when does adding a verifier actually improve the
+final answer, and when does it make things worse?}
+
+Two literatures border this question without answering it: the
+self-correction literature documents that intrinsic self-correction
+frequently fails while sound external verification helps
+\citep{stechly2024selfverify,kamoi2024when,huang2024cannot}, and the
+test-time-scaling theory of \citet{dorner2026rocnreroll} covers pure
+resampling---rejection carries no feedback, retries are independent
+redraws, and no operating-point guidance is given.  Neither
+analyzes the repair loop with feedback.
+
+This paper contributes a compact theory of the GVR loop and a
+two-benchmark, nine-arm study ($164 \times 9$ HumanEval;
+$247 \times 9$ MBPP) with one generator, six LLM judge
+configurations from three model families, and silent-oracle
+instrumentation of every attempt.  Our contributions:
+
+\begin{enumerate}
+\item \textbf{A corrected backfire theory
+(§\ref{sec:asym}--\ref{sec:degrade}).}  The miss-asymmetry exchange
+rate $R = a/(1-b)$; its degradation modulation $R_q$ and per-event
+flip threshold $q^\ast$ (Theorem~\ref{thm:flip}); and the terminal
+backfire condition (Corollary~\ref{cor:backfire}): the loop
+backfires iff $A_N(p,a,b,q) < p$, equivalent in the steady state to
+$R_q < (1-a)/b$.  Per-event dominance of false rejections does not
+by itself imply backfire---a verifier whose catches rescue enough
+wrong work stays above the baseline even with $q < q^\ast$.
+\item \textbf{Configuration-dependent backfire,
+family-associated in our arms (§\ref{sec:exp}).}  Under identical
+tasks, prompts, generator budget, and instrumentation, same-family
+judges lose correct work (isolated self-judge $-15$ on HumanEval,
+$p=.0007$; cross-capability judge $-10$ on both benchmarks), while
+neither cross-family configuration shows a significant negative
+effect and glm-5.2 trends positive on MBPP ($+8$, nominal
+$p=.039$/$.012$).  On HumanEval the cross-family judges are
+near-oracles (leak $.012$ at $\hat a + \hat b \approx 1.7$).  The
+cross-family judges are also stronger, reasoning models---a
+co-varying confound a dedicated control arm dissects: the
+same-family judge served with thinking enabled and the
+cross-family verdict budget still collapses and clusters, yet
+nets $-3$/$-4$ (n.s.), so the significant backfires require the
+same-family correlation \emph{and} the non-reasoning operating
+point.
+\item \textbf{The mechanism: acceptance collapse, not broken
+repair (§\ref{sec:exp}).}  Retries succeed at $q=.47$--$.95$, yet
+same-family judges' acceptance of correct attempts collapses with
+round ($\hat a_1 \approx .75$--$.87$,
+$\hat a_{k \ge 4} \approx .00$--$.36$) although the isolated
+judges cannot see the round, and their rejections of correct work
+cluster by task---evidence consistent with the instance-persistent
+correlation that Theorem~\ref{thm:decorr} prices.  The terminal
+backfire condition, evaluated at the experiment's budget, signs
+all twelve judge-benchmark cells; the pooled two-stage model flags
+the self-judge arms only marginally and underpredicts their losses
+by an order of magnitude---the gap is the collapse itself.
+\item \textbf{Nulls and instrumentation (§\ref{sec:exp}).}
+A fully paired feedback ablation (shared failing code, McNemar)
+detects no feedback-content effect ($p = .50$/$.55$ on the two
+benchmarks), leaving $\delta > 0$
+(Proposition~\ref{prop:delta}) undetermined; a verifier-context
+probe again finds no collapse; single-shot verification purifies
+the delivered stream in all 12 judge-benchmark cells; and
+completion-cap instrumentation matters---a 1{,}024-token pilot
+truncated 36--68\% of round-2 completions by arm on HumanEval
+into unparsable code, masquerading as repair degradation.
+\end{enumerate}
+
+\section{Related Work}\label{sec:related}
+
+\paragraph{Self-correction and its critiques.}
+Self-Refine \citep{madaan2023selfrefine} and Reflexion
+\citep{shinn2023reflexion} popularized iterative self-improvement;
+\citet{stechly2024selfverify} documented verifier false-rejection
+pathologies, with \citet{huang2024cannot} and the critical survey
+of \citet{kamoi2024when} reaching compatible conclusions.  Our
+theory gives these observations a probabilistic form: collapse
+corresponds to failure-mode correlation between generator and
+verifier (§\ref{sec:mixture}), and our experiment delimits where
+that correlation appears.
+
+\paragraph{Test-time scaling theory.}
+\citet{dorner2026rocnreroll} prove that rejection sampling and
+Best-of-$N$ accuracy is determined by verifier ROC geometry, and
+that RS dominates BoN at fixed compute.  Their setting is pure
+resampling: no feedback, no repair, no generator--verifier
+correlation analysis, and no operating-point selection guidance.
+Our paper is a deliberate three-axis extension: repair feedback
+(§\ref{sec:repair}), operating-point calibration
+(§\ref{sec:asym}), and degraded/correlated retries
+(§\ref{sec:degrade},~\ref{sec:cluster}).  Related theory includes
+inference-time alignment coverage analysis
+\citep{huang2025bestofn}.  In the training-time regime,
+\citet{plesner2026imperfect} study the robustness of RLVR training
+to noisy verifiers and report that verifier precision matters more
+than recall; our Theorem~\ref{thm:asym} supplies the inference-time
+counterpart of that asymmetry in closed form.
+
+\paragraph{Verification techniques.}
+Self-consistency \citep{wang2023selfconsistency} uses agreement as
+the verification signal; process supervision
+\citep{lightman2024verify} trains step-level verifiers;
+LLM-as-judge evaluation is surveyed by \citet{zheng2023judging}.
+Control-theoretic formalizations of self-correction dynamics appear
+in \citet{wu2026cybercorrect}; they manage loop stability, whereas
+we manage the verifier's error budget.  All of these techniques
+select a point on the verifier's quality trade-off; our results say
+\emph{which} point to select and when the loop tolerates a harsh
+verifier.
+
+\section{Theory}\label{sec:theory}
+
+Table~\ref{tab:notation} (Appendix~\ref{app:notation}) summarizes
+the paper's notation.
+
+\subsection{Setup: the GVR loop}\label{sec:setup}
+
+One \emph{attempt}: a generator produces an artifact; a verifier
+either \emph{accepts} or \emph{rejects} it (with feedback); a
+rejection triggers a new attempt, up to budget $N$.
+
+\begin{definition}[Per-attempt rates]\label{def:rates}
+Let correctness of an attempt be binary, with generator success
+$p = \Pr(C)$.  The verifier has acceptance rate
+$a = \Pr(\text{accept} \mid C)$ and catch rate
+$b = \Pr(\text{reject} \mid \neg C)$.  Its two error types are the
+\emph{miss} $1-b$ (accepting wrong work) and the \emph{false
+rejection} $1-a$ (rejecting correct work).
+\end{definition}
+
+\begin{definition}[Attempt outcomes]\label{def:outcomes}
+Per attempt: $s = pa$ (accept-correct),
+$\ell = (1-p)(1-b)$ (\emph{leak}: accept-wrong), and
+$r = 1 - s - \ell$ (reject).
+\end{definition}
+
+Terminal states: \emph{accepted} (split into correct and leak) and
+\emph{unresolved} (budget exhausted).  We assume (A1) the verdict is
+independent of the generation path given correctness and (A2)
+attempts are i.i.d.\ with constant $(p,a,b)$; both are relaxed in
+§\ref{sec:repair}--\ref{sec:cluster}.
+
+\begin{lemma}[Single-pass composition]\label{lem:single}
+For $N=1$, $\Pr(\text{deliver wrong}) = (1-p)(1-b)$: a wrong
+deliverable requires the conjunction of two independent failures.
+The false-rejection rate does not enter this quantity.
+\end{lemma}
+
+\begin{proof}
+Direct computation of $\Pr(\neg C \wedge \text{accept})$.
+\end{proof}
+
+\begin{theorem}[Loop closed forms]\label{thm:loop}
+Under (A1)--(A2), with budget $N \ge 1$:
+\begin{align}
+\Pr(\text{leak}) &= \ell\,\frac{1-r^N}{1-r}, \quad
+\Pr(\text{accepted}) = (s+\ell)\frac{1-r^N}{1-r},\\
+\Pr(\text{unresolved}) &= r^N, \qquad
+\mathbb{E}[\text{attempts}] = \frac{1-r^N}{1-r}.
+\end{align}
+\end{theorem}
+
+\begin{proof}
+The loop is geometric: reaching attempt $k$ requires $k-1$
+rejections (probability $r^{k-1}$); summing and telescoping gives
+the claims.  The instance-level structure matches the ROC-based
+characterization of \citet{dorner2026rocnreroll} for the pure
+resampling case; we state it in outcome-decomposed form for use
+below.
+\end{proof}
+
+\begin{theorem}[Budget--precision invariance]\label{thm:invariance}
+For every $N\ge1$,
+\[
+\pi := \Pr(\text{wrong} \mid \text{accepted})
+= \frac{(1-p)(1-b)}{pa + (1-p)(1-b)},
+\]
+independent of $N$: added budget converts unresolved mass into
+accepted mass \emph{at fixed precision}.
+\end{theorem}
+
+\begin{proof}
+Ratio of the leak and accepted probabilities in
+Theorem~\ref{thm:loop}; the geometric factors cancel.
+\end{proof}
+
+\subsection{The miss-asymmetry theorem}\label{sec:asym}
+
+Both verifier errors hurt $\pi$---misses first-order through $\ell$,
+false rejections second-order: each forced retry buys a fresh chance
+to leak.  Their marginal damages have a closed-form ratio.
+
+\begin{theorem}[Miss-asymmetry]\label{thm:asym}
+\[
+\frac{\partial \pi / \partial (1-b)}{\partial \pi / \partial (1-a)}
+= \frac{a}{1-b}.
+\]
+\end{theorem}
+
+\begin{proof}
+$\partial\pi/\partial(1-b) = (1-p)s/(s+\ell)^2$ and
+$\partial\pi/\partial(1-a) = p\ell/(s+\ell)^2$ by the chain rule on
+Definition~\ref{def:outcomes}; the ratio simplifies to $a/(1-b)$.
+\end{proof}
+
+At $(a,b)=(0.95,0.95)$, $R \approx 19$: one unit of catch is
+worth $\sim$19 units of acceptance for precision, while $1-a$
+enters expected attempts first-order and $1-b$ only through the
+negligible $\ell$ term.
+
+\begin{corollary}[Calibration guideline]\label{cor:calibrate}
+Under (A2), any infinitesimal verifier modification---or one small
+enough that the operating point moves little---trading acceptance
+for catch at a local exchange rate better than $1{:}R$ improves
+final precision to first order; its price is paid only in
+attempts.  Calibrate verifiers
+aggressively toward catch rate; budget false rejections rather than
+fear them.  The qualifier is essential: when retries are degraded
+below $q^\ast$ (Theorem~\ref{thm:flip}) the effective exchange rate
+drops below 1 and the advice inverts---protect acceptance.
+\end{corollary}
+
+\begin{corollary}[Majority voting]\label{cor:majority}
+Replace a verifier by a majority vote of $k$ conditionally
+independent verifiers (strict majority rejects; ties accept).  For
+$a, b > 1/2$ the vote raises \emph{both} effective rates:
+\[
+b^{(k)} = \sum_{j>k/2}\binom{k}{j}b^j(1-b)^{k-j} > b, \qquad
+a^{(k)} = 1 - \sum_{j>k/2}\binom{k}{j}(1-a)^j a^{k-j} > a,
+\]
+because majority rule makes false rejections \emph{rarer}, not
+commoner---a lone objecting judge no longer suffices to reject.
+Precision improves through both channels, and generator attempts
+do not increase ($r$ falls); the price is $k$ verifier calls per
+round (majority-of-three at the pooled self-judge point:
+generator attempts $1.38 \to 1.25$, verifier calls $1.38 \to
+3.75$, steady state under (A2), $<1\%$ change at $N{=}5$).
+Unanimity-style rules (reject if any judge objects) trade the
+other way: $a^{(k)} = a^k$ falls sharply while $b^{(k)} =
+1-(1-b)^k$ rises.
+\end{corollary}
+
+\subsection{Correlated failures}\label{sec:mixture}
+
+(A1) fails in a specific direction: a verifier that is the same
+model, primed with the generator's context, tends to repeat the
+generator's mistake.  Model this with a latent failure-mode mixture.
+
+\begin{definition}[Failure-mode mixture]\label{def:mixture}
+Conditioned on latent mode $M=m$ with prior $\pi_m$, generation
+succeeds with $p_m$; the verifier accepts correct output with
+$a_m$ and catches wrong output with $b_m$, independently within
+mode.
+\end{definition}
+
+\begin{definition}[Effective rates]\label{def:beff}
+With $\epsilon = \sum_m \pi_m(1-p_m)$, error mass
+$\mu_m = \pi_m(1-p_m)/\epsilon$ and success mass
+$\sigma_m = \pi_m p_m/(1-\epsilon)$:
+$b_{\mathrm{eff}} = \sum_m \mu_m b_m$ is the error-mass-weighted
+catch rate and $a_{\mathrm{eff}} = \sum_m \sigma_m a_m$ the
+success-mass-weighted acceptance rate.
+\end{definition}
+
+\begin{theorem}[Decorrelation condition]\label{thm:decorr}
+Attempt-1 outcomes obey the closed forms of §\ref{sec:setup} with
+pooled rates $(p,a,b) \to (1-\epsilon,\, a_{\mathrm{eff}},\,
+b_{\mathrm{eff}})$; in particular the accepted-stream error
+\[
+\pi_1 = \frac{\epsilon\,(1-b_{\mathrm{eff}})}
+{\epsilon\,(1-b_{\mathrm{eff}}) + (1-\epsilon)\,a_{\mathrm{eff}}}
+\]
+improves on no verification (delivered error $\epsilon$) iff
+\[
+a_{\mathrm{eff}} + b_{\mathrm{eff}} > 1,
+\]
+i.e., iff the mass-weighted operating point lies above the chance
+diagonal of ROC space: verification helps exactly when
+$\Pr(\text{accept}\mid C) > \Pr(\text{accept}\mid \neg C)$.  Catch
+alone does not suffice: if $b_{\mathrm{eff}} \to 0$ while
+$a_{\mathrm{eff}} < 1$, verification is \emph{strictly harmful}
+($\pi_1 = \epsilon/[\epsilon+(1-\epsilon)a_{\mathrm{eff}}] >
+\epsilon$), degenerating to neutral theater only in the
+rubber-stamp limit $a_{\mathrm{eff}} \to 1$.  Correlated failure has
+an exact form: with $\nu = \sum_m \pi_m(1-b_m)$ the prior-weighted
+miss rate,
+\[
+\Pr(\text{wrong} \wedge \text{miss})
+= \epsilon(1-b_{\mathrm{eff}})
+= \epsilon\nu + \mathrm{Cov}_m(1-p_m,\,1-b_m),
+\]
+the covariance over modes under prior $\pi_m$: decorrelation is
+precisely the claim that this covariance be small.
+\end{theorem}
+
+For $N>1$ the mixture bites: with instance-persistent modes,
+surviving to round $k$ conditions on the mode mix.  §\ref{sec:exp}
+validates the attempt-1 form directly and then observes the
+mixture in the raw: judges that cannot see the round nonetheless
+accept correct work at collapsing per-round rates as rounds
+accumulate---the signature of instance-persistent low-$a_m$ modes
+conditioning the surviving pool.
+
+\subsection{Repair feedback breaks i.i.d.\ --- favorably}\label{sec:repair}
+
+\begin{proposition}[Repair factor]\label{prop:delta}
+Let rejected attempts be followed by a repaired attempt succeeding
+with $p' = p + \delta(1-p)$, $\delta \in [0,1]$ ($\delta=0$:
+rejection sampling; $\delta=1$: perfect repair).  Then all
+formulas of §\ref{sec:asym} with constant $p$ are conservative
+(actual leak is upper-bounded), and the invariance of
+Theorem~\ref{thm:invariance} breaks in the favorable direction:
+precision improves with budget.
+\end{proposition}
+
+\begin{proof}[Proof sketch]
+Sample a uniform $u$ once per attempt slot and couple a repaired
+draw (correct iff $u \le p'$) with a fresh one (correct iff
+$u \le p$); since $p' \ge p$, the repaired draw is correct whenever
+the fresh one is.  Every round $k \ge 2$ therefore has masses
+$s' = p'a \ge s$ and $\ell' = (1-p')(1-b) \le \ell$, so its
+accepted stream is at least as pure,
+$\pi' = \ell'/(s'+\ell') \le \pi$, and every constant-$p$ formula
+is an upper bound on realized leak.  The terminal conditional
+error at budget $N$ is a weighted mean of $\pi$ (round 1) and
+$\pi'$ (rounds $\ge 2$) with the $\pi'$-weight strictly increasing
+in $N$; it therefore decreases toward $\pi'$---the favorable break
+of Theorem~\ref{thm:invariance}'s invariance.
+\end{proof}
+
+\noindent The bound isolates the repair channel: the verifier's
+$(a,b)$ are held fixed, and repair is assumed to act on generator
+success alone---it does not speak to verifier--generator
+correlation (§\ref{sec:mixture}).
+
+\subsection{Repair degradation flips the asymmetry}\label{sec:degrade}
+
+Real repairs do not redraw at the generator's first-attempt rate:
+the retry pool is conditioned on rejection, enriched for hard
+instances, and its success rate $q$ can fall far below $p$---mildly
+for some judges in our study, severely for oracle-side repair on
+the harder benchmark.
+
+\begin{definition}[Retry rate]\label{def:q}
+$q := \Pr(\text{attempt } k{+}1 \text{ correct} \mid \text{attempt }
+k \text{ rejected})$, $k \ge 1$.
+\end{definition}
+
+A falsely rejected \emph{correct} solution enters a sub-loop with
+per-round success $q$; conditional on resolution it ends wrong with
+\[
+\pi_q = \frac{(1-q)(1-b)}{qa + (1-q)(1-b)}.
+\]
+
+\begin{theorem}[Modulated exchange rate]\label{thm:flip}
+At the population level, the marginal damage ratio becomes
+\[
+R_q \;=\; \frac{a}{1-b}\cdot\frac{q(1-p)}{p(1-q)}.
+\]
+The asymmetry \emph{flips} (false rejections dominate) iff
+\[
+q < q^\ast \;=\; \frac{(1-b)p}{(1-p)a + (1-b)p}.
+\]
+\end{theorem}
+
+\begin{proof}
+A unit $\varepsilon$ of extra miss rate moves $\varepsilon(1-p)$
+mass of wrong first attempts from ``caught'' (sub-loop wrong with
+probability $\pi_q$) to ``delivered wrong'' (probability 1):
+damage $\varepsilon(1-p)(1-\pi_q)$.  A unit of extra false-rejection
+rate moves $\varepsilon p$ mass of correct first attempts from
+``delivered correct'' to the sub-loop: damage $\varepsilon p \pi_q$.
+Substituting $\pi_q = \ell_q/(s_q+\ell_q)$ with $s_q = qa$,
+$\ell_q = (1-q)(1-b)$ and taking the ratio yields $R_q$; setting
+$R_q = 1$ and solving for $q$ gives $q^\ast$.  For $q=p$ the
+expression recovers Theorem~\ref{thm:asym}.
+\end{proof}
+
+\begin{corollary}[Terminal backfire condition]\label{cor:backfire}
+In the two-stage model (round 1 at $p$, retries at $q$, constant
+$(a,b)$), the delivered-correct probability at budget $N$ is
+\[
+A_N \;=\; pa \;+\; r_1\, qa\, \frac{1-r_q^{N-1}}{1-r_q},
+\qquad
+r_1 = p(1-a) + (1-p)b, \qquad
+r_q = q(1-a) + (1-q)b,
+\]
+and the loop backfires relative to the deliver-first-attempt baseline
+iff $A_N < p$.  In the infinite-budget limit this is equivalent to
+\[
+R_q \;<\; \frac{1-a}{b}:
+\]
+terminal backfire requires the modulated exchange rate to fall below
+$(1-a)/b$---for verifiers above the chance line ($a+b>1$, hence
+$(1-a)/b<1$), a strictly deeper drop than the per-event flip at
+$R_q=1$.  Per-event dominance of false rejections does not by itself
+imply backfire: a verifier whose catches convert enough wrong first
+attempts into rescued correct work can remain above the baseline even
+with $q < q^\ast$.  The conversion rate of correct solutions into
+wrong ones remains $(1-a)\,p\,\pi_q$.
+\end{corollary}
+
+\begin{proof}
+Round 1 delivers correct mass $pa$; reaching sub-round $k \ge 2$
+requires the round-1 rejection mass $r_1$ followed by $k-2$ sub-loop
+rejections ($r_q$ each) and delivers $qa$; summing the geometric
+series gives $A_N$.  For the limit, $A_\infty < p$ iff
+\[
+r_1\,qa < p(1-a)\bigl[qa+(1-q)(1-b)\bigr]
+\iff
+(1-p)\,b\,q\,a < p\,(1-a)\,(1-q)\,(1-b),
+\]
+and substituting $R_q$ from Theorem~\ref{thm:flip} turns the
+right-hand condition into $R_q < (1-a)/b$.  Since $A_N < A_\infty$ for
+every finite $N$, the steady-state condition is sufficient for
+backfire at any budget (finite $N$ only enlarges the backfire
+region).
+\end{proof}
+
+\subsection{What pooled rates cannot see}\label{sec:cluster}
+
+The pooled $(\hat a, \hat b)$ reported by evaluation studies
+summarize attempts across instances and rounds.  Three phenomena
+hide beneath the summary: (i) retry degradation
+(§\ref{sec:degrade}) multiplies per-retry leak chance from
+$(1-p)(1-b)$ to $(1-q)(1-b)$; (ii) misses cluster on particular
+wrong-solution instances that recur across rounds, so
+instance-level modes with low $b_m$ carry disproportionate mass;
+and (iii) acceptance can collapse on particular \emph{correct}
+instances---modes with low $a_m$ that survive every round---which
+the pooled $\hat a$ averages away.  §\ref{sec:exp} measures (iii)
+directly, uses (i) to bound (ii), and shows that the magnitude of
+pooled-rate failure is itself instrumentation-sensitive: pooled
+theory understates terminal leak only mildly in our clean runs,
+and a completion-cap artifact can inflate the apparent failure
+substantially.
+
+\section{Experiments}\label{sec:exp}
+
+\paragraph{Setup.}
+Two benchmarks: HumanEval \citep{chen2021humaneval}, all 164
+problems, and MBPP \citep{austin2021mbpp}, 247 tasks from the
+hand-verified subset of the official test split (task IDs
+11--510).  Generator: qwen-plus (temperature 1.0), prompted to
+plan then emit a Python block; budget $N{=}5$.  Nine arms:
+\textsf{none} (deliver first attempt); \textsf{oracle\_full} /
+\textsf{oracle\_verdict} (unit tests in a timeout-limited
+subprocess; feedback = failing-test traceback / verdict only); and
+six LLM judge configurations---\textsf{judge\_hetero} (qwen-max),
+\textsf{judge\_self\_iso} and \textsf{judge\_self\_ctx} (qwen-plus,
+the generator's own family; the latter sees the generator's
+reasoning), two cross-family judges,
+\textsf{judge\_deepseek\_iso} (deepseek-v4-pro) and
+\textsf{judge\_glm\_iso} (glm-5.2), and a same-family
+reasoning-judge control, \textsf{judge\_self\_iso\_thinking}
+(qwen-plus with thinking enabled, 4{,}096-token verdict budget),
+added to dissect the family/capability confound.  Every attempt is
+additionally
+scored by the oracle \emph{silently}, so per-arm operating points,
+per-round dynamics, leak composition, and terminal outcomes are
+all measured directly.
+
+\emph{Instrumentation note.}  Completion budgets matter twice
+over.  \emph{Generator side}: a pilot run at a 1{,}024-token
+completion cap truncated $36$--$68\%$ of round-2 completions by
+arm on HumanEval ($30$--$45\%$ on MBPP; first attempts: $4$--$6\%$
+and $0$--$2\%$) into unparsable code, which masqueraded as severe
+repair degradation; the reported runs use an 8{,}192-token cap,
+under which unparsable rates fall to $0.8\%$ (HumanEval) and
+$0.2\%$ (MBPP), with a per-attempt parse-health flag recorded.
+\emph{Judge side}: the non-reasoning Qwen judges emit short
+verdicts, and their 512-token verdict budget was never binding
+(zero verdict-format failures across all same-family cells); the
+thinking control's 4{,}096-token budget likewise never bound (two
+MBPP tasks were lost to repeated API read timeouts and are
+excluded from its statistics, $n{=}245$ of $247$); the
+cross-family reasoning judges,
+given 4{,}096, occasionally exhaust that budget mid-thought, and
+the harness's conservative fallback records these as rejections
+($38$/$28$ events for glm-5.2 and $4$/$7$ for deepseek-v4-pro on
+HumanEval/MBPP, predominantly on correct attempts)---an asymmetry
+that biases \emph{against} the cross-family arms, which
+nonetheless dominate; where we isolate the judge's own verdict
+behavior (Table~\ref{tab:ak}) we exclude these events.  The API
+reports served identifiers qwen-plus, qwen-max, deepseek-v4-pro,
+glm-5.2 (rolling aliases; October 2026).  Throughout, an attempt
+is \emph{correct} iff it passes the benchmark's test suite (the
+silent oracle); suite adequacy is a limitation
+(§\ref{sec:discussion}).
+
+\begin{table}[t]
+\centering\small
+\caption{HumanEval main results ($n{=}164$ per arm; 95\% Wilson
+CIs).  $\pi_{\mathrm{pred}}$ from Theorem~\ref{thm:invariance}
+with measured $\hat p_1,\hat a,\hat b$; $\pi_{\mathrm{obs}}$ =
+error conditional on delivery.}
+\label{tab:main}
+\begin{tabular}{lccccccccc}
+\toprule
+Arm & $\hat p_1$ & $\hat a$ & $\hat b$ & Acc. & Leak &
+Unres. & $\mathbb{E}[k]$ & $\pi_{\mathrm{pred}}$ &
+$\pi_{\mathrm{obs}}$\\
+\midrule
+none & .95 & -- & -- & .95 & .049 & .000 & 1.00 & -- & --\\
+oracle\_full & .95 & 1.00 & 1.00 & .99 & .000 & .006 & 1.07 & .000 & .000\\
+oracle\_verdict & .96 & 1.00 & 1.00 & .99 & .000 & .012 & 1.10 & .000 & .000\\
+judge\_hetero & .95 & .68 & .71 & .89 & .043 & .067 & 1.46 & .022 & .046\\
+judge\_self\_iso & .93 & .58 & .78 & .84 & .043 & .116 & 1.64 & .026 & .048\\
+judge\_self\_ctx & .95 & .71 & .81 & .91 & .024 & .067 & 1.41 & .015 & .026\\
+judge\_deepseek\_iso & .95 & .88 & .89 & .97 & .012 & .018 & 1.21 & .006 & .012\\
+judge\_glm\_iso & .94 & .80 & .87 & .95 & .012 & .037 & 1.27 & .011 & .013\\
+judge\_self\_iso\_thinking & .95 & .72 & .83 & .93 & .018 & .049 & 1.40 & .012 & .019\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\centering\small
+\caption{MBPP main results ($n{=}247$ per arm, thinking control
+$245$; conventions as Table~\ref{tab:main}).}
+\label{tab:mbpp-main}
+\begin{tabular}{lccccccccc}
+\toprule
+Arm & $\hat p_1$ & $\hat a$ & $\hat b$ & Acc. & Leak &
+Unres. & $\mathbb{E}[k]$ & $\pi_{\mathrm{pred}}$ &
+$\pi_{\mathrm{obs}}$\\
+\midrule
+none & .74 & -- & -- & .74 & .259 & .000 & 1.00 & -- & --\\
+oracle\_full & .74 & 1.00 & 1.00 & .82 & .000 & .178 & 1.86 & .000 & .000\\
+oracle\_verdict & .74 & 1.00 & 1.00 & .81 & .000 & .190 & 1.89 & .000 & .000\\
+judge\_hetero & .74 & .77 & .41 & .70 & .263 & .036 & 1.36 & .213 & .273\\
+judge\_self\_iso & .73 & .72 & .56 & .69 & .239 & .073 & 1.51 & .185 & .258\\
+judge\_self\_ctx & .73 & .75 & .45 & .71 & .235 & .053 & 1.38 & .215 & .248\\
+judge\_deepseek\_iso & .74 & .82 & .33 & .76 & .235 & .008 & 1.28 & .225 & .237\\
+judge\_glm\_iso & .73 & .88 & .38 & .77 & .223 & .012 & 1.23 & .207 & .225\\
+judge\_self\_iso\_thinking & .73 & .66 & .55 & .71 & .233 & .057 & 1.59 & .203 & .247\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Oracle verification never loses correct work}
+Unit-test verification behaves exactly as the theory demands.
+Leak is $.000$ in all four oracle arm-benchmark cells
+(Theorem~\ref{thm:loop} at $b{=}1$), no correct solution is ever
+re-rolled away, and the terminal-vs-own-first-attempt contrast is
+uniformly positive: $+7$/$+5$ rescues on HumanEval ($p = .016$/
+$.063$; the wrong-first pools are only 7--8 tasks) and
+$+20$/$+17$ on MBPP (both $p < 10^{-4}$).  MBPP also displays the
+budget side of the trade: with repair genuinely hard there
+($\hat q \approx .17$), the oracle arms convert extra budget into
+unresolved mass ($18$--$19\%$) rather than wrong deliveries.  At
+$a = 1$ the backfire condition is vacuous; at $b = 1$ the
+single-shot stream is exactly pure.
+
+\subsection{Same-family judges lose correct work; cross-family
+judges do not}
+Cross-arm comparisons are confounded by first-draw sampling, so
+the causal comparison pairs each arm's terminal outcome against
+\emph{its own} first attempt on the same task
+(Table~\ref{tab:within}).
+
+\begin{table}[t]
+\centering\small
+\caption{Within-arm pairing: terminal outcome vs.\ the same arm's
+own first attempt (McNemar exact).  ``Lost''/``rescued'': first
+attempt correct/terminal not, and first wrong/terminal correct;
+$p$: unresolved as failure (primary); $p_{\mathrm{del}}$:
+unresolved excluded; effect in accuracy points.}
+\label{tab:within}
+\begin{tabular}{lcccccc}
+\toprule
+Arm & Lost & Rescued & Net & $p$ & $p_{\mathrm{del}}$ & Effect\\
+\midrule
+\multicolumn{7}{l}{\emph{HumanEval} ($n{=}164$ per arm)}\\
+oracle\_full & 0 & 7 & $+7$ & $.016$ & $.016$ & $+4.3$pp\\
+oracle\_verdict & 0 & 5 & $+5$ & $.063$ & $.063$ & $+3.0$pp\\
+judge\_self\_iso & 17 & 2 & $-15$ & $.0007$ & $1.00$ & $-9.1$pp\\
+judge\_hetero & 11 & 1 & $-10$ & $.006$ & $.625$ & $-6.1$pp\\
+judge\_self\_ctx & 9 & 3 & $-6$ & $.146$ & $.250$ & $-3.7$pp\\
+judge\_deepseek\_iso & 1 & 4 & $+3$ & $.375$ & $.125$ & $+1.8$pp\\
+judge\_glm\_iso & 3 & 5 & $+2$ & $.727$ & $.063$ & $+1.2$pp\\
+judge\_self\_iso\_thinking & 8 & 5 & $-3$ & $.581$ & $.219$ & $-1.8$pp\\
+\midrule
+\multicolumn{7}{l}{\emph{MBPP} ($n{=}247$ per arm; thinking
+control $n{=}245$)}\\
+oracle\_full & 0 & 20 & $+20$ & $<10^{-4}$ & $<10^{-4}$ & $+8.1$pp\\
+oracle\_verdict & 0 & 17 & $+17$ & $<10^{-4}$ & $<10^{-4}$ & $+6.9$pp\\
+judge\_self\_iso & 13 & 3 & $-10$ & $.021$ & $1.00$ & $-4.0$pp\\
+judge\_hetero & 11 & 1 & $-10$ & $.006$ & $.219$ & $-4.0$pp\\
+judge\_self\_ctx & 10 & 6 & $-4$ & $.454$ & $.289$ & $-1.6$pp\\
+judge\_deepseek\_iso & 3 & 8 & $+5$ & $.227$ & $.109$ & $+2.0$pp\\
+judge\_glm\_iso & 2 & 10 & $+8$ & $.039$ & $.012$ & $+3.2$pp\\
+judge\_self\_iso\_thinking & 10 & 6 & $-4$ & $.455$ & $.508$ & $-1.6$pp\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:within} is the paper's cleanest contrast, and two
+regularities organize it.  First, \emph{every same-family judge
+cell is negative, and the four significant negative cells are all
+same-family}: the isolated self-judge loses net $-15$ on HumanEval
+($p = .0007$) and $-10$ on MBPP ($p = .021$); the
+cross-capability judge---still Qwen-family---loses $-10$ on both
+benchmarks ($p = .006$ each).  Second, \emph{no cross-family cell
+is ever significantly negative}: deepseek-v4-pro trends positive on
+both ($+3$/$+5$, n.s.), and glm-5.2 is \emph{positive} on MBPP
+($+8$, nominal $p = .039$; $p_{\mathrm{del}} = .012$).  On
+HumanEval the cross-family judges are near-oracles; on MBPP they
+are lenient but harmless (Tables~\ref{tab:main},
+\ref{tab:mbpp-main}).  The
+harmful configuration is exclusively the middle one: a judge harsh
+enough to reject correct work ($\hat a = .58$--$.77$) and, as
+§\ref{sec:collapse} shows, persistent about it.
+
+The same-family losses are not delivered errors but \emph{churned}
+correct work: of the self-judge's 17 HumanEval losses, 16 end
+unresolved and only one is delivered wrong; MBPP shows the same
+shape (13 losses: 4
+delivered-wrong, 9 unresolved).  The conversion channel that the
+theory prices, $(1-a)p\pi_q$, has collapsed (HumanEval conversions
+across the six judges: 3/1/0/0/0/1), because retry quality is no
+longer binding: repairs succeed at $\hat q = .47$--$.95$.  What
+fails is not the repair but the verifier's willingness to accept
+it.  The churn shape also explains the $p_{\mathrm{del}}$ column:
+excluding unresolved tasks removes exactly the tasks the verifier
+destroyed, so a delivered-only convention cannot witness
+churn-type losses by construction.
+
+The judge configurations co-vary---the cross-family judges are
+also stronger, \emph{reasoning} models---and the
+\textsf{judge\_self\_iso\_thinking} control dissects the confound:
+it serves the same qwen-plus family with thinking enabled and the
+cross-family 4{,}096-token verdict budget.  On the family side it
+behaves like its siblings---its acceptance still collapses and
+clusters (§\ref{sec:collapse})---but on the outcome side it does
+not: net $-3$ on HumanEval ($p = .58$) and $-4$ on MBPP
+($p = .45$), against $-15$/$-10$ for its non-reasoning sibling.
+The significant backfires therefore require the same-family
+correlation \emph{and} the non-reasoning operating point, and the
+difference lives in resubmission behavior: on MBPP the control
+accepts $62\%$ of correct round-2 attempts against the plain
+self-judge's $42\%$, so the churn never becomes a significant
+loss.  The remaining budget asymmetry is
+inert and biased against the winners: the non-reasoning Qwen
+judges' 512-cap was never binding, while the cross-family
+reasoning judges occasionally exhausted their own budgets
+mid-thought, and the harness recorded those events as rejections
+concentrated on correct attempts (excluding them, glm's
+acceptance of correct work is $.96$ on HumanEval and $.94$ on
+MBPP, against $.80$/$.88$ as measured inside the loop); verdict
+costs differ widely (medians: $240$--$860$ tokens non-reasoning
+Qwen, $860$--$1{,}480$ cross-family, $\approx 3{,}500$ control),
+but the only asymmetry that exists points against the
+cross-family arms.  We report nominal $p$-values throughout: under
+Benjamini--Hochberg control across the twelve judge cells, the
+HumanEval self-judge and both cross-capability backfires remain
+significant, while the MBPP self-judge ($p = .021$) and glm's
+positive effect ($p = .039$) do not---we read both as strongly
+suggestive.  The pattern itself is complete sign separation: the
+eight same-family cells are exactly the eight most-negative
+effects of the twelve (exchangeability $p = 1/\binom{12}{8}
+\approx .002$).
+
+\subsection{The mechanism: per-round acceptance collapse}
+\label{sec:collapse}
+The same-family judges' pooled operating points look merely
+mediocre ($\hat a = .58$--$.77$).  The per-round instrumentation
+shows what the pool hides (Table~\ref{tab:ak}): acceptance of
+\emph{correct} attempts collapses as rounds accumulate.  The
+isolated self-judge accepts $82\%$ of correct first attempts
+on HumanEval but $24\%$ of correct second attempts and
+$0$--$22\%$ thereafter (MBPP: same shape; Table~\ref{tab:ak}).
+The cross-capability
+and context judges collapse similarly; late-round cells are
+individually noisy ($n = 5$--$29$) but the trajectory is monotone
+and replicates.
+The thinking control collapses in family fashion ($.87 \to .45
+\to .20$ on HumanEval, $.75 \to .62 \to .35$ on MBPP), though
+less steeply than its non-reasoning siblings.  No cross-family
+judge collapses: on parsed verdicts (\emph{Instrumentation
+note}), deepseek-v4-pro on MBPP accepts correct work at $.84$
+(round 1) and $.88$ (round 2), and glm-5.2's apparent HumanEval
+decline vanishes---its round-2 acceptance among parsed verdicts
+is $12/12$.
+
+The isolated judges cannot see the round---their input is the
+problem and the code, nothing else---so the collapse cannot be a
+response to round information.  It is also not a harness artifact
+in the arms where it appears: the same-family judges never
+exhausted their verdict budgets (zero format failures), so every
+same-family rejection in Table~\ref{tab:ak} is a parsed verdict.
+Surviving-pool composition differs across arms, but the generator
+and retry prompts are shared, and the cross-family judges accept
+the same retry stream at a flat rate---neither code style nor
+instrument explains a same-family-specific pattern.  A round-blind
+judge that accepts fresh correct work at $.8+$ and survivors near
+zero is responding to \emph{which tasks} survive: each rejection
+round enriches the surviving pool for instance-persistent
+low-$a_m$ modes, exactly the correlated-failure mixture of
+Theorem~\ref{thm:decorr}.  This
+is how same-family backfire persists at high repair quality:
+repairs succeed ($\hat q = .47$--$.95$), but correct repairs on
+hostile-mode tasks are re-rejected until the budget dies.
+
+The rejections also cluster by task, as the mixture predicts.  On
+HumanEval the isolated self-judge rejected \emph{every} correct
+attempt on $19$ of the $32$ tasks where it saw more than one; its
+per-task rejection counts are
+overdispersed relative to a pooled binomial
+($\chi^2/\mathrm{df} = 1.31$); the thinking control clusters
+like its siblings ($\chi^2/\mathrm{df} = 1.03$, with $8$ of $24$
+multi-correct tasks all-rejected).  The cross-family arms show no
+such clustering on either benchmark
+($\chi^2/\mathrm{df} = .60$--$.72$; deepseek-v4-pro on MBPP
+rejected all correct attempts on $0$ of the $26$ tasks where it
+saw more than one).  Selection makes this diagnostic imperfect---a
+task must be rejected to keep producing rounds---so we read it as
+evidence \emph{consistent with} instance persistence rather than
+an identification of it; the contrast---same-family clustered,
+cross-family diffuse, on both benchmarks---is what the theory
+anticipates.
+
+The terminal-backfire condition
+(Corollary~\ref{cor:backfire}) prices the pooled parameters, and
+Table~\ref{tab:backfire} shows both of its forms against the
+data.  The exact finite-budget form, $A_5 < \hat p_1$, signs all
+twelve cells: it flags the four significant backfires and clears
+the eight cells that are not, the thinking control included
+(under a pure sign labeling it additionally misses the four
+negative-but-nonsignificant context and control cells).  The cross-capability arms are flagged clearly
+($-2.5$/$-1.4$pp predicted against $-6.1$/$-4.0$pp observed),
+because their retry quality is genuinely degraded on the hard
+pool ($\hat q = .71$/$.51$ against $\hat p_1 = .95$/$.74$, below
+$q^\ast$ under either rejection-pool estimate)---the degradation
+regime of Theorem~\ref{thm:flip}.  The self-judge arms are
+flagged only marginally ($-0.1$pp each, against $-9.1$/$-4.0$pp
+observed), and the residual is the point: pooling averages away
+the acceptance collapse of Table~\ref{tab:ak}, which is exactly
+the difference between the model's $-0.1$pp and the measured
+losses.  The steady-state reduction
+$\hat R_q < (1-\hat a)/\hat b$ is the interpretable limit and is
+sufficient-only---it agrees everywhere except the two self-judge
+cells, which the finite-budget truncation term catches.  The two
+theorems are complementary: the flip condition
+(Theorem~\ref{thm:flip}) prices degradation-driven backfire, the
+mixture (Theorem~\ref{thm:decorr}) prices correlation-driven
+backfire, and the experiment measures both.
+
+\begin{table}[t]
+\centering\small
+\caption{Per-round acceptance of correct attempts among
+\emph{parsed} verdicts, $\hat a_k =
+\Pr(\text{accept} \mid \text{correct}, \text{round } k)$ (cells
+with $n \ge 5$; round-1 cells have $n \ge 146$).  Cross-family
+cells exclude verdict-format fallbacks (Setup), so all cells
+measure the judge's own verdicts.  The isolated judges see only
+the problem and the code---they cannot see the round.}
+\label{tab:ak}
+\begin{tabular}{lccccc}
+\toprule
+Arm & $k{=}1$ & $k{=}2$ & $k{=}3$ & $k{=}4$ & $k{=}5$\\
+\midrule
+\multicolumn{6}{l}{\emph{HumanEval}}\\
+judge\_self\_iso & .82 & .24 & .22 & .00 & .05\\
+judge\_hetero & .81 & .52 & .47 & .00 & .00\\
+judge\_self\_ctx & .86 & .55 & .17 & .08 & .11\\
+judge\_glm\_iso & .97 & 1.00 & -- & -- & --\\
+judge\_deepseek\_iso & .93 & .71 & -- & -- & --\\
+judge\_self\_iso\_thinking & .87 & .45 & .20 & .36 & .12\\
+\midrule
+\multicolumn{6}{l}{\emph{MBPP}}\\
+judge\_self\_iso & .86 & .42 & .31 & .12 & .00\\
+judge\_hetero & .86 & .55 & .22 & .22 & .20\\
+judge\_self\_ctx & .86 & .56 & .45 & .00 & .10\\
+judge\_glm\_iso & .95 & .89 & .80 & -- & --\\
+judge\_deepseek\_iso & .84 & .88 & .60 & -- & --\\
+judge\_self\_iso\_thinking & .75 & .62 & .35 & .25 & .25\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\centering\small
+\caption{The terminal-backfire condition
+(Corollary~\ref{cor:backfire}) against observed within-arm net
+effects.  $\hat q = \hat p_2$ (mixed rejection pool).  Primary
+prediction: the finite-budget form $A_5 < \hat p_1$ (in-sample
+consistency check, not an out-of-sample forecast); the
+steady-state reduction $\hat R_q < (1-\hat a)/\hat b$ is shown
+for interpretation and is sufficient-only.  Discrimination: 12/12
+under the significance labeling (under a pure sign labeling the
+four negative, nonsignificant context and control cells are
+additionally missed).}
+\label{tab:backfire}
+\begin{tabular}{lcccccc}
+\toprule
+Arm & $\hat q$ & $A_5 - \hat p_1$ & Pred. & $\hat R_q$ &
+$(1-\hat a)/\hat b$ & Net (significance)\\
+\midrule
+\multicolumn{7}{l}{\emph{HumanEval}}\\
+judge\_hetero & .71 & $-2.5$pp & yes & .30 & .45 & $-10$ ($p{=}.006$)\\
+judge\_self\_iso & .83 & $-0.1$pp & yes & .92 & .53 & $-15$ ($p{=}.0007$)\\
+judge\_self\_ctx & .81 & $+1.9$pp & no & .95 & .36 & $-6$ (n.s.)\\
+judge\_deepseek\_iso & .83 & $+3.9$pp & no & 2.03 & .14 & $+3$ (n.s.)\\
+judge\_glm\_iso & .95 & $+5.0$pp & no & 7.83 & .23 & $+2$ (n.s.)\\
+judge\_self\_iso\_thinking & .79 & $+1.5$pp & no & .81 & .33 & $-3$ (n.s.)\\
+\midrule
+\multicolumn{7}{l}{\emph{MBPP}}\\
+judge\_hetero & .51 & $-1.4$pp & yes & .48 & .57 & $-10$ ($p{=}.006$)\\
+judge\_self\_iso & .47 & $-0.1$pp & yes & .54 & .50 & $-10$ ($p{=}.021$)\\
+judge\_self\_ctx & .64 & $+3.1$pp & no & .91 & .56 & $-4$ (n.s.)\\
+judge\_deepseek\_iso & .72 & $+3.5$pp & no & 1.15 & .54 & $+5$ (n.s.)\\
+judge\_glm\_iso & .65 & $+4.6$pp & no & .94 & .33 & $+8$ ($p{=}.039$)\\
+judge\_self\_iso\_thinking & .66 & $+4.1$pp & no & 1.09 & .61 & $-4$ (n.s.)\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Single-shot purification and the budget}
+\label{sec:budget}
+Truncating every run at budget $N$ and recomputing
+conditional-on-delivery error traces the purity curve
+(Table~\ref{tab:budget} in the appendix).  At $N{=}1$, all twelve
+judge-benchmark
+cells are purer than their baselines---exactly the chance-line
+prediction of Theorem~\ref{thm:decorr}, since every pooled
+operating point satisfies $\hat a + \hat b > 1$.  What the added
+budget buys depends on the configuration.  For the cross-family
+judges the stream barely moves; for the non-reasoning same-family
+judges purity decays with budget as churned mass accumulates
+(the control decays only mildly, $.007 \to .019$ HumanEval and
+$.230 \to .247$ MBPP, below baseline throughout), and the
+cross-capability arm on MBPP---lowest catch ($\hat b = .41$) and
+harshest churn---is the only cell whose delivered stream crosses
+the no-verification baseline (at $N{=}3$: $.267$ vs.\ $.259$).  On
+HumanEval no arm crosses at any budget, though the self-judge
+approaches it by $N{=}5$.  Budget
+is thus not neutral (Theorem~\ref{thm:invariance} assumes
+generator-rate retries).
+
+\subsection{Pooled rates: a mild, family-associated gap}
+\label{sec:pooled}
+Pooled operating points understate observed terminal leak only
+mildly in the clean runs.  Per-arm ratios
+$\pi_{\mathrm{obs}}/\pi_{\mathrm{pred}}$ are $1.19$--$2.12$ on
+HumanEval (geometric mean $1.72$, bootstrap 95\% CI
+$[0.90, 3.33]$; leak counts are only $2$--$7$ per arm, and $22\%$
+of resamples contain a zero-leak arm) and $1.05$--$1.39$ on MBPP
+(geometric mean $1.19$, $[0.95, 1.43]$; both same-family arms
+individually exclude 1).  A degradation-only model at
+the measured per-round success trajectory reproduces the
+same-family gaps in full on MBPP ($106$--$109\%$ of the
+pooled-to-observed gap), so no miss-clustering channel is
+required there; the cross-family arms' tiny gaps are not
+separately explained ($72$--$75\%$) but sit within noise of zero.
+
+Two lessons.  First, the \emph{magnitude} of pooled-rate failure
+is instrumentation-sensitive: the same three HumanEval judge arms
+that measure $2.1$/$1.8$/$1.7$ here measured $3.4$/$3.3$/$3.6$
+under the pilot's 1{,}024-token cap.  Second, pooled $\hat a$
+hides the acceptance collapse of §\ref{sec:collapse} in the
+opposite direction: the pool says the self-judge accepts $58\%$
+of correct work; the round-2 truth is $24\%$ and falling.  Pooled
+rates are blind to the two per-round structures that drive the
+loop.
+
+\subsection{Feedback content: a paired null ablation}
+\label{sec:ablation}
+The within-run comparison of traceback vs.\ verdict-only feedback
+is confounded by independent first draws, so we re-ran the
+ablation \emph{paired}: for every task whose oracle-arm first
+attempt failed, the same failing code was re-submitted to
+two repair sub-loops differing only in feedback content
+(verdict-only vs.\ full traceback; same generator, temperature,
+and budget; McNemar exact on repair success).  The result is a
+clean null: $5/8$ vs.\ $7/8$ repaired on HumanEval ($p = .50$),
+$18/64$ vs.\ $21/64$ on MBPP ($p = .55$), pooled discordants $4$
+vs.\ $9$ ($p = .27$)---the direction consistently favors
+traceback but is far from significance, and the within-run
+(unpaired) comparison is likewise null.  We conclude that
+$\delta > 0$ (Proposition~\ref{prop:delta}) remains open here:
+feedback content is not detectably the lever at this sample size.
+
+\subsection{No context-induced collapse}
+The collapse motivation of §\ref{sec:mixture} predicts that a
+judge shown the generator's own reasoning should be \emph{worse}.
+On both benchmarks the context-sharing judge sits between the
+isolated self-judge and the cross-family arms: a slightly better
+operating point, per-round acceptance still collapsing
+(Table~\ref{tab:ak}), and a non-significant within-arm deficit
+($-6$, $p = .15$; $-4$, $p = .45$).  We find no evidence of context-induced collapse and cannot
+exclude moderate harm; what is new here is that the
+judge-configuration contrast dwarfs the context contrast:
+correlation travels with the judge configuration, not the
+prompt---it must be measured (Theorem~\ref{thm:decorr}), not
+assumed.
+
+
+\section{Discussion}\label{sec:discussion}
+
+\paragraph{Design guidelines.}
+\textbf{G1: oracle-first.}  Wherever a deterministic check exists
+(tests, compilers, schemas), attach it to the verifier: leak is
+exactly zero in every oracle cell we measured, at bounded cost.
+\textbf{G2: mind the configuration, not just the operating
+point.}  The cheapest lever we measured is judge selection: no
+cross-family configuration showed a significant backfire, and on
+HumanEval the cross-family judges approached oracle behavior,
+while same-family judges with similar operating points destroyed
+correct work.  The thinking control shows both axes act---the
+collapse signature travels with the family, significant damage
+requires the weak non-reasoning configuration---so prefer a
+strong verifier from another family; as a heuristic that held in
+every cell we measured.  \textbf{G3: probe acceptance
+persistence.}  Take correct solutions the judge has rejected and
+resubmit them: if acceptance keeps falling by round
+(Table~\ref{tab:ak}'s pattern), the correlated-failure mode is
+active---change the verifier, not the prompt.  \textbf{G4: check the flip condition
+where repair is genuinely hard.}  When retries succeed well below
+the generator's rate (our cross-capability arm; oracle repair on
+MBPP at $\hat q \approx .17$), Corollary~\ref{cor:calibrate}'s
+catch-first advice inverts---protect acceptance
+(Corollary~\ref{cor:backfire}).  \textbf{G5: never trust pooled operating points.}
+They average away both per-round structures---retry degradation
+and acceptance collapse (§\ref{sec:pooled}); report per-round
+health.  \textbf{G6: budget is a verifier property.}
+Single-shot purification held in all twelve judge cells
+(§\ref{sec:budget}); every same-family degradation and the only
+baseline crossing arrived with budget, a correlated verifier
+converting extra budget into extra rounds of re-rejecting the
+same correct work.
+
+\paragraph{Limitations.}
+One generator (qwen-plus) at one temperature; judges are one model
+per family from three families, via rolling aliases (API
+identifiers recorded);
+cross-family arms are isolated-context only, so the family and
+context levers are not fully crossed.  The family/capability
+confound is dissected by the thinking control but not dissolved
+to single ingredients: with one model per family and one
+reasoning toggle, whether it is reasoning per se, verdict budget,
+or another capability ingredient that mutes the damage remains
+open---though the control's collapse shows the correlation
+channel itself is family-associated.  Two code benchmarks with unit-test oracles:
+correctness is measured relative to the benchmark test suites,
+not exhaustively, so ``leak'' means suite-passing wrong work.
+Same-family losses concentrate in unresolved tasks, so
+delivered-error composition rests on small conversion counts
+($\le 5$ per arm on HumanEval); late-round acceptance cells rest
+on $n = 5$--$29$ attempts and are individually noisy, though the
+monotone collapse replicates.  The acceptance-persistence statistics are
+survivor-selected---consistent with, not identifying,
+instance-persistent modes.  The paired feedback ablation
+(§\ref{sec:ablation}; 72 pairs) is underpowered for small
+$\delta$; $p$-values are nominal (FDR control: §\ref{sec:exp});
+and $q$ is estimated from mixed rejection pools (the
+correctly-rejected-pool estimate exceeds $q^\ast$ for every arm
+but the cross-capability one).
+
+\section{Conclusion}
+
+Verification is not free reliability, and its failure modes have
+structure: a verifier can hurt through degraded retries (priced by
+the flip threshold $q^\ast$) or through correlation with the
+generator (exposed by per-round acceptance), and pooled operating
+points hide both.  In our study the second mode dominated: non-reasoning same-family
+judges churned correct work to death while cross-family judges
+sat near the oracle---and the thinking control shows the
+signature alone does not suffice.  The practical summary:
+\emph{before trusting a verifier, measure what it does to correct
+work it has already rejected once.}
+
+\paragraph{Reproducibility.}
+Both experiments use qwen-plus as generator (temperature 1.0,
+completion cap 8{,}192 tokens) with judges qwen-max and qwen-plus
+(512-token verdict budget), deepseek-v4-pro and glm-5.2 (4{,}096;
+reasoning models), and a qwen-plus reasoning control
+(enable\_thinking, 4{,}096), served via a DashScope-compatible API
+(October 2026); budget $N{=}5$; bootstrap seed 20261016.  Complete
+per-attempt logs (1{,}476 HumanEval runs, 2{,}221 MBPP runs,
+10.7M tokens; every attempt silently oracle-scored with parse
+health), 144 paired-ablation variants, prompts, code, and
+analysis scripts are in the supplementary material.
+
+\begin{thebibliography}{20}
+
+\bibitem[Austin et al.(2021)]{austin2021mbpp}
+J.~Austin, A.~Odena, M.~Nye, et al.
+\newblock Program synthesis with large language models.
+\newblock \emph{arXiv:2108.07732}, 2021.
+
+\bibitem[Chen et al.(2021)]{chen2021humaneval}
+M.~Chen, J.~Tworek, H.~Jun, et al.
+\newblock Evaluating large language models trained on code.
+\newblock \emph{arXiv:2107.03374}, 2021.
+
+\bibitem[Dorner et al.(2026)]{dorner2026rocnreroll}
+F.~E. Dorner, Y.~Chen, A.~F. Cruz, F.~Yang.
+\newblock {ROC}-n-reroll: How verifier imperfection affects
+test-time scaling.
+\newblock \emph{ICLR}, 2026. arXiv:2507.12399.
+
+\bibitem[Huang et al.(2024)]{huang2024cannot}
+J.~Huang, X.~Chen, S.~Mishra, H.~S. Zheng, A.~W. Yu, X.~Song,
+D.~Zhou.
+\newblock Large language models cannot self-correct reasoning yet.
+\newblock \emph{ICLR}, 2024.
+
+\bibitem[Huang et al.(2025)]{huang2025bestofn}
+A.~Huang, A.~Block, Q.~Liu, N.~Jiang, A.~Krishnamurthy,
+D.~J. Foster.
+\newblock Is best-of-$n$ the best of them? Coverage, scaling, and
+optimality in inference-time alignment.
+\newblock \emph{ICML}, 2025. arXiv:2503.21878.
+
+\bibitem[Kamoi et al.(2024)]{kamoi2024when}
+R.~Kamoi, Y.~Zhang, N.~Zhang, J.~Han, R.~Zhang.
+\newblock When can {LLM}s actually correct their own mistakes? {A}
+critical survey of self-correction of {LLM}s.
+\newblock \emph{TACL}, 12:1417--1440, 2024.
+
+\bibitem[Lightman et al.(2024)]{lightman2024verify}
+H.~Lightman, V.~Kosaraju, Y.~Burda, et al.
+\newblock Let's verify step by step.
+\newblock \emph{ICLR}, 2024.
+
+\bibitem[Madaan et al.(2023)]{madaan2023selfrefine}
+A.~Madaan, N.~Tandon, P.~Gupta, et al.
+\newblock Self-refine: Iterative refinement with self-feedback.
+\newblock \emph{NeurIPS}, 2023.
+
+\bibitem[Plesner et al.(2026)]{plesner2026imperfect}
+A.~Plesner, F.~Guzm\'an, A.~Athalye.
+\newblock An imperfect verifier is good enough: Learning with noisy
+rewards.
+\newblock \emph{arXiv:2604.07666}, 2026.
+
+\bibitem[Shinn et al.(2023)]{shinn2023reflexion}
+N.~Shinn, F.~Cassano, E.~Berman, A.~Gopinath, K.~Narasimhan,
+S.~Yao.
+\newblock Reflexion: Language agents with verbal reinforcement
+learning.
+\newblock \emph{NeurIPS}, 2023.
+
+\bibitem[Stechly et al.(2025)]{stechly2024selfverify}
+K.~Stechly, K.~Valmeekam, S.~Kambhampati.
+\newblock On the self-verification limitations of large language
+models on reasoning and planning tasks.
+\newblock \emph{ICLR}, 2025. arXiv:2402.08115.
+
+\bibitem[Wang et al.(2023)]{wang2023selfconsistency}
+X.~Wang, J.~Wei, D.~Schuurmans, et al.
+\newblock Self-consistency improves chain of thought reasoning in
+language models.
+\newblock \emph{ICLR}, 2023.
+
+\bibitem[Wu et al.(2026)]{wu2026cybercorrect}
+Y.~Wu, Y.~Liu, Y.~Shu.
+\newblock {CyberCorrect}: A cybernetic framework for closed-loop
+self-correction in large language models.
+\newblock \emph{arXiv:2605.17305}, 2026.
+
+\bibitem[Zheng et al.(2023)]{zheng2023judging}
+L.~Zheng, W.~Chiang, Y.~Sheng, et al.
+\newblock Judging {LLM}-as-a-judge with {MT}-Bench and Chatbot
+Arena.
+\newblock \emph{NeurIPS Datasets and Benchmarks}, 2023.
+
+\end{thebibliography}
+
+\appendix
+
+\section{Notation}\label{app:notation}
+
+\begin{table}[htbp]
+\centering\small
+\caption{Notation.}
+\label{tab:notation}
+\begin{tabular}{ll}
+\toprule
+Symbol & Meaning \\
+\midrule
+$p$, $p_k$ & generator success rate per attempt; round-$k$ conditional success \\
+$a$, $b$ & verifier operating point: $\Pr(\text{accept}\mid C)$, $\Pr(\text{reject}\mid \neg C)$ \\
+$1-a$, $1-b$ & false rejection; miss (the two verifier error types) \\
+$s$, $\ell$, $r$ & per-attempt accept-correct, leak, and rejection masses (Definition~\ref{def:outcomes}) \\
+$N$, $\mathbb{E}[k]$ & attempt budget; expected attempts \\
+$\pi$, $\pi_q$ & conditional-on-delivery error of the loop; of the retry sub-loop \\
+$q$, $q^\ast$ & retry success rate (Definition~\ref{def:q}); flip threshold (Theorem~\ref{thm:flip}) \\
+$R$, $R_q$ & miss-asymmetry exchange rate (Theorem~\ref{thm:asym}); its degraded-retry modulation \\
+$\delta$ & repair factor (Proposition~\ref{prop:delta}) \\
+$\epsilon$, $a_{\mathrm{eff}}$, $b_{\mathrm{eff}}$ & mixture error mass and effective rates (Definitions~\ref{def:mixture}--\ref{def:beff}) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Budget sweep}\label{app:budget}
+
+\begin{table}[htbp]
+\centering\small
+\caption{Conditional-on-delivery error $\pi$ by budget $N$
+(runs truncated at $N$ rounds).  No-verification baselines
+(deliver the first attempt unverified): $.049$ (HumanEval),
+$.259$ (MBPP).}
+\label{tab:budget}
+\begin{tabular}{lccccc}
+\toprule
+Arm & $N{=}1$ & $N{=}2$ & $N{=}3$ & $N{=}4$ & $N{=}5$\\
+\midrule
+\multicolumn{6}{l}{\emph{HumanEval} (baseline $.049$)}\\
+judge\_hetero & .023 & .048 & .046 & .046 & .046\\
+judge\_self\_iso & .031 & .036 & .035 & .042 & .048\\
+judge\_self\_ctx & .029 & .027 & .026 & .026 & .026\\
+judge\_deepseek\_iso & .007 & .006 & .006 & .013 & .012\\
+judge\_glm\_iso & .014 & .013 & .013 & .013 & .013\\
+judge\_self\_iso\_thinking & .007 & .020 & .020 & .019 & .019\\
+\midrule
+\multicolumn{6}{l}{\emph{MBPP} (baseline $.259$)}\\
+judge\_hetero & .245 & .250 & .267 & .268 & .273\\
+judge\_self\_iso & .214 & .237 & .242 & .258 & .258\\
+judge\_self\_ctx & .244 & .244 & .246 & .249 & .248\\
+judge\_deepseek\_iso & .240 & .233 & .237 & .239 & .237\\
+judge\_glm\_iso & .225 & .226 & .225 & .222 & .225\\
+judge\_self\_iso\_thinking & .230 & .227 & .242 & .246 & .247\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\end{document}
