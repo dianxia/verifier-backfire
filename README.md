@@ -133,7 +133,7 @@ Notes:
   author={Guidong Chen},
   year={2026},
   note={Preprint. Code and full logs: https://github.com/dianxia/verifier-backfire},
-  doi={10.5281/zenodo.23463247}
+  doi={10.5281/zenodo.23560792}
 }
 ```
 
