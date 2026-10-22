@@ -29,8 +29,8 @@ judges (control net −3/−4, both n.s.).
 
 | Path | Content |
 |---|---|
-| `paper/main.tex` | Paper source, standalone LaTeX (v1.0.0, archived as DOI 10.5281/zenodo.23463247) |
-| `paper_tmlr/` | Anonymous TMLR submission source (official tmlr.sty template) |
+| ~~`paper/`~~ | Superseded pre-rerun paper (v1.0.0) — preserved in the Zenodo v1 archive ([DOI 10.5281/zenodo.23463247](https://doi.org/10.5281/zenodo.23463247)) and in git history; its headline numbers reflect the completion-truncation artifact described in the notes below |
+| `paper_tmlr/` | Paper source (TMLR format, official tmlr.sty template) |
 | `src/` | Experiment code: GVR loop, 9 verifier arms, sandbox oracle, paired-ablation driver, analysis |
 | `results/e1.jsonl` | E1: all 1,476 HumanEval runs (9 arms) — per-attempt verdicts, ground truth, parse health, tokens |
 | `results/e1_summary.json` | E1 aggregated per-arm stats |
@@ -124,6 +124,8 @@ Notes:
 
 ## Citation
 
+<!-- After cutting the v2 release: replace the doi below with the Zenodo *Concept DOI*
+     (shown on the Zenodo record page) so citations always resolve to the latest version. -->
 ```bibtex
 @misc{chen2026verifiers,
   title={When Verifiers Backfire: A Cost--Correctness Theory of
