@@ -20,7 +20,13 @@
   correct work among parsed verdicts (chi2/df, all-rejected share).
 - Terminal backfire condition in both forms: the steady-state
   sufficient condition R_q < (1-a)/b and the exact finite-budget
-  form A_5 < p1.
+  form A_5 < p1, with a task-level bootstrap CI for A_5 - p1.
+- Acceptance-persistence permutation test: conditional null that
+  shuffles verdicts across each arm's correct attempts (per-task
+  counts preserved), with empirical p for the chi2/df and
+  all-rejected statistics.
+- Per-task compute cost: mean generator/judge tokens by arm
+  (the paper's Appendix C).
 
 Requires results/e1_summary.json (run `python -m src.analyze` first).
 
@@ -29,6 +35,7 @@ Usage: python -m src.forensics [--path results/e1.jsonl]
 import argparse
 import json
 import os
+import random
 from collections import defaultdict
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -67,6 +74,52 @@ def pi_deg_model(p1: float, q: float, a: float, b: float, N: int = 5) -> float:
         bad += surv * lq
         surv *= rq
     return bad / (good + bad)
+
+
+def _clustering_stats(n_list: list[int], m_list: list[int]):
+    """(chi2/df, all-rejected count, multi-correct task count) or None."""
+    N, M, K = sum(n_list), sum(m_list), len(n_list)
+    if K < 3 or M == 0 or M == N:
+        return None
+    pbar = M / N
+    chi2 = sum((m - n * pbar) ** 2 / (n * pbar * (1 - pbar))
+               for n, m in zip(n_list, m_list))
+    multi = [(n, m) for n, m in zip(n_list, m_list) if n >= 2]
+    allrej = sum(1 for n, m in multi if m == n)
+    return chi2 / (K - 1), allrej, len(multi)
+
+
+def _arm_params(recs_arm: dict) -> tuple | None:
+    """Task-level (p1, a, b, q=p2) from an arm's records."""
+    tasks = list(recs_arm.values())
+    if not tasks:
+        return None
+    n = len(tasks)
+    p1 = sum(1 for t in tasks if t["attempts"][0]["gt_pass"]) / n
+    corr = [x for t in tasks for x in t["attempts"] if x["gt_pass"]]
+    wrong = [x for t in tasks for x in t["attempts"] if not x["gt_pass"]]
+    if not corr or not wrong:
+        return None
+    a = sum(1 for x in corr if x["verdict"] == "accept") / len(corr)
+    b = sum(1 for x in wrong if x["verdict"] == "reject") / len(wrong)
+    r2 = [t for t in tasks if len(t["attempts"]) >= 2]
+    if not r2:
+        return None
+    q = sum(1 for t in r2 if t["attempts"][1]["gt_pass"]) / len(r2)
+    return p1, a, b, q
+
+
+def _a5_gap(p1: float, a: float, b: float, q: float, N: int = 5) -> float:
+    """A_N - p1: the exact finite-budget backfire statistic."""
+    s1, l1 = p1 * a, (1 - p1) * (1 - b)
+    r1 = 1 - s1 - l1
+    sq, lq = q * a, (1 - q) * (1 - b)
+    rq = 1 - sq - lq
+    good, surv = s1, r1
+    for _ in range(2, N + 1):
+        good += surv * sq
+        surv *= rq
+    return good - p1
 
 
 def main() -> None:
@@ -275,6 +328,44 @@ def main() -> None:
               f"chi2/df={chi2 / (K - 1):.2f}  all-rej={allrej}/{len(multi)}  "
               f"conc={rej_multi}/{M}")
 
+    print("\n=== Persistence: conditional permutation test (10k) ===")
+    print("  Verdicts shuffled across each arm's parsed correct attempts")
+    print("  (per-task counts preserved); one-sided empirical p.")
+    rng = random.Random(20261022)
+    for arm in JUDGE_ARMS:
+        per_task = []
+        for r in by_arm[arm].values():
+            corr = [a_ for a_ in r["attempts"]
+                    if a_["gt_pass"]
+                    and FB_MARKER not in (a_.get("feedback") or "")]
+            if corr:
+                per_task.append(
+                    [1 if a_["verdict"] == "reject" else 0 for a_ in corr])
+        n_list = [len(x) for x in per_task]
+        obs = _clustering_stats(n_list, [sum(x) for x in per_task])
+        if obs is None:
+            print(f"  {arm:<16} degenerate")
+            continue
+        pool = [x for lst in per_task for x in lst]
+        c_chi = c_ar = 0
+        REPS = 10000
+        for _ in range(REPS):
+            rng.shuffle(pool)
+            idx = 0
+            sim = []
+            for n_ in n_list:
+                sim.append(sum(pool[idx:idx + n_]))
+                idx += n_
+            st = _clustering_stats(n_list, sim)
+            if st is None:
+                continue
+            if st[0] >= obs[0]:
+                c_chi += 1
+            if st[1] >= obs[1]:
+                c_ar += 1
+        print(f"  {arm:<16} chi2/df={obs[0]:.2f}  p={c_chi / REPS:.4f}  "
+              f"all-rej={obs[1]}/{obs[2]}  p={c_ar / REPS:.4f}")
+
     print("\n=== Terminal backfire condition (q = p2) ===")
     print("  steady state: R_q < (1-a)/b (sufficient-only)")
     print("  finite N=5:   A_5 < p1 (the paper's primary prediction)")
@@ -305,6 +396,33 @@ def main() -> None:
               f"pred_A5={A5 < p1}  Rq={Rq:.2f}  (1-a)/b={thr:.2f}  "
               f"pred_ss={Rq < thr}  net={rescued - lost:+d}")
 
+    print("\n=== A_5 - p1: task-level bootstrap CI (10k resamples, seed 20261022) ===")
+    rng = random.Random(20261022)
+    for arm in JUDGE_ARMS:
+        tasks = list(by_arm[arm].values())
+        pr = _arm_params(by_arm[arm])
+        if pr is None:
+            print(f"  {arm:<16} degenerate")
+            continue
+        obs = _a5_gap(*pr)
+        vals = []
+        for _ in range(10000):
+            sample = [rng.choice(tasks) for _ in tasks]
+            rs = {t["task_id"]: t for t in sample}
+            pr2 = _arm_params(rs)
+            if pr2 is None:
+                continue
+            vals.append(_a5_gap(*pr2))
+        vals.sort()
+        if not vals:
+            print(f"  {arm:<16} degenerate")
+            continue
+        lo = vals[int(0.025 * len(vals))]
+        hi = vals[int(0.975 * len(vals))]
+        pneg = sum(1 for v in vals if v < 0) / len(vals)
+        print(f"  {arm:<16} A5-p1={obs:+.4f}  CI[{lo:+.4f},{hi:+.4f}]  "
+              f"P(boot<0)={pneg:.3f}")
+
     print("\n=== Budget sweep: pi(N) (runs truncated at N rounds) ===")
     for arm in JUDGE_ARMS:
         row = []
@@ -323,6 +441,52 @@ def main() -> None:
     none_leak = sum(1 for r in by_arm["none"].values() if r["leak"])
     print(f"  none baseline    "
           f"{none_leak / len(by_arm['none']):.3f}")
+
+    print("\n=== Per-task compute cost (mean tokens by arm) ===")
+    print(f"  {'arm':<24} {'E[k]':>5} {'gen':>6} {'judge':>7} {'total':>7}")
+    for arm in sorted(by_arm.keys()):
+        rs = list(by_arm[arm].values())
+        if not rs:
+            continue
+        n = len(rs)
+        gen = sum(sum(a_.get("gen_tokens", 0) for a_ in r["attempts"])
+                  for r in rs) / n
+        jud = sum(sum(a_.get("judge_tokens", 0) for a_ in r["attempts"])
+                  for r in rs) / n
+        ek = sum(r["n_attempts"] for r in rs) / n
+        print(f"  {arm:<24} {ek:5.2f} {gen:6.0f} {jud:7.0f} {gen + jud:7.0f}")
+
+    print("\n=== C3 fallback-delivery convention (deliver last attempt ===")
+    print("=== when the budget exhausts) ===")
+    print(f"  {'arm':<24} {'C1acc':>6} {'C3acc':>6} {'C1eff%':>7} "
+          f"{'C3eff%':>7}  unres(last-correct)")
+    for arm in sorted(by_arm.keys()):
+        if arm == "none":
+            continue
+        rs = list(by_arm[arm].values())
+        n = len(rs)
+        if not n:
+            continue
+        c1 = sum(1 for r in rs if r["delivered_correct"])
+        unres = [r for r in rs if not r["resolved"]]
+        lc = sum(1 for r in unres if r["attempts"][-1]["gt_pass"])
+        lost1 = sum(1 for r in rs if r["attempts"][0]["gt_pass"]
+                    and not bool(r["delivered_correct"]))
+        resc1 = sum(1 for r in rs if not r["attempts"][0]["gt_pass"]
+                    and bool(r["delivered_correct"]))
+
+        def c3ok(r: dict) -> bool:
+            return (bool(r["delivered_correct"])
+                    or (not r["resolved"]
+                        and r["attempts"][-1]["gt_pass"]))
+
+        lost3 = sum(1 for r in rs
+                    if r["attempts"][0]["gt_pass"] and not c3ok(r))
+        resc3 = sum(1 for r in rs
+                    if not r["attempts"][0]["gt_pass"] and c3ok(r))
+        print(f"  {arm:<24} {c1 / n:6.3f} {(c1 + lc) / n:6.3f} "
+              f"{(resc1 - lost1) / n * 100:+6.1f} "
+              f"{(resc3 - lost3) / n * 100:+6.1f}  {lc}/{len(unres)}")
 
 
 if __name__ == "__main__":

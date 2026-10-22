@@ -53,19 +53,22 @@ correct solutions for the isolated self-judge on HumanEval
 ($p=.0007$), $-10$ for the cross-capability judge on both
 benchmarks---while neither cross-family configuration
 (deepseek-v4-pro, glm-5.2) shows a reliable negative effect, and
-glm-5.2 trends positive on MBPP ($+8$, nominal $p=.039$).  A
-same-family reasoning-judge control dissociates the axes: the
-collapse signature persists within the family, but the
-significant losses are confined to the non-reasoning judges.
+glm-5.2 shows a positive point estimate on MBPP that does not
+survive multiplicity correction.  A same-family reasoning-judge
+control partially separates the confounded axes: the collapse
+signature persists within the family, but the significant losses
+are confined to the non-reasoning judges.
 The mechanism is not broken repair: retries succeed at
 $q=.47$--$.95$, but same-family judges' acceptance of correct work
-collapses across rounds (round 1: $.75$--$.87$; round $\ge 4$:
-$.00$--$.36$) although the judges cannot see the round---the
+collapses across rounds (round 1: $.75$--$.87$; round $\ge 4$
+pooled: $.00$--$.26$) although the judges cannot see the
+round---the
 empirical signature of instance-persistent verifier--generator
 correlation, one of two failure regimes our theory separates; the
 other, priced by the flip condition, governs the cross-capability
 arm, and the corrected condition, evaluated at the experiment's
-budget, signs all twelve judge-benchmark cells.  Oracle verification
+budget, flags every significant backfire in-sample and clears
+every cross-family cell.  Oracle verification
 never loses a correct solution ($+20$/$+17$ rescues on MBPP,
 $p<10^{-4}$; leak exactly zero wherever $b{=}1$), and fully paired
 feedback and verifier-context ablations yield no statistically
@@ -123,24 +126,24 @@ effect and glm-5.2 trends positive on MBPP ($+8$, nominal
 $p=.039$/$.012$).  On HumanEval the cross-family judges are
 near-oracles (leak $.012$ at $\hat a + \hat b \approx 1.7$).  The
 cross-family judges are also stronger, reasoning models---a
-co-varying confound a dedicated control arm dissects: the
-same-family judge served with thinking enabled and the
-cross-family verdict budget still collapses and clusters, yet
-nets $-3$/$-4$ (n.s.), so the significant backfires require the
-same-family correlation \emph{and} the non-reasoning operating
-point.
+co-varying confound a dedicated same-family control partially
+separates: served with thinking enabled and the cross-family
+verdict budget, the same-family judge still collapses and
+clusters yet nets $-3$/$-4$ (n.s.), so the significant backfires
+require the same-family correlation \emph{and} the non-reasoning
+operating point.
 \item \textbf{The mechanism: acceptance collapse, not broken
 repair (§\ref{sec:exp}).}  Retries succeed at $q=.47$--$.95$, yet
 same-family judges' acceptance of correct attempts collapses with
 round ($\hat a_1 \approx .75$--$.87$,
-$\hat a_{k \ge 4} \approx .00$--$.36$) although the isolated
+$\hat a_{k \ge 4} \approx .00$--$.26$ pooled) although the isolated
 judges cannot see the round, and their rejections of correct work
 cluster by task---evidence consistent with the instance-persistent
-correlation that Theorem~\ref{thm:decorr} prices.  The terminal
-backfire condition, evaluated at the experiment's budget, signs
-all twelve judge-benchmark cells; the pooled two-stage model flags
-the self-judge arms only marginally and underpredicts their losses
-by an order of magnitude---the gap is the collapse itself.
+correlation that Theorem~\ref{thm:decorr} prices.  The terminal-backfire condition, evaluated at the experiment's
+budget, is consistent in-sample with the significance labels of
+all twelve judge-benchmark cells; the pooled two-stage model
+underpredicts the self-judge losses by an order of magnitude---a
+residual consistent with the acceptance collapse it cannot see.
 \item \textbf{Nulls and instrumentation (§\ref{sec:exp}).}
 A fully paired feedback ablation (shared failing code, McNemar)
 detects no feedback-content effect ($p = .50$/$.55$ on the two
@@ -382,11 +385,8 @@ precisely the claim that this covariance be small.
 
 For $N>1$ the mixture bites: with instance-persistent modes,
 surviving to round $k$ conditions on the mode mix.  §\ref{sec:exp}
-validates the attempt-1 form directly and then observes the
-mixture in the raw: judges that cannot see the round nonetheless
-accept correct work at collapsing per-round rates as rounds
-accumulate---the signature of instance-persistent low-$a_m$ modes
-conditioning the surviving pool.
+observes the mixture in the raw: judges that cannot see the round
+nonetheless accept correct work at collapsing per-round rates.
 
 \subsection{Repair feedback breaks i.i.d.\ --- favorably}\label{sec:repair}
 
@@ -415,18 +415,16 @@ in $N$; it therefore decreases toward $\pi'$---the favorable break
 of Theorem~\ref{thm:invariance}'s invariance.
 \end{proof}
 
-\noindent The bound isolates the repair channel: the verifier's
-$(a,b)$ are held fixed, and repair is assumed to act on generator
-success alone---it does not speak to verifier--generator
-correlation (§\ref{sec:mixture}).
+\noindent The bound isolates repair: $(a,b)$ held fixed, repair
+acting on generator success alone---it does not speak to
+verifier--generator correlation (§\ref{sec:mixture}).
 
 \subsection{Repair degradation flips the asymmetry}\label{sec:degrade}
 
-Real repairs do not redraw at the generator's first-attempt rate:
-the retry pool is conditioned on rejection, enriched for hard
-instances, and its success rate $q$ can fall far below $p$---mildly
-for some judges in our study, severely for oracle-side repair on
-the harder benchmark.
+Real repairs do not redraw at the generator's rate: the retry
+pool is rejection-conditioned and enriched for hard instances, so
+its success rate $q$ can fall far below $p$---severely for
+oracle-side repair on the harder benchmark.
 
 \begin{definition}[Retry rate]\label{def:q}
 $q := \Pr(\text{attempt } k{+}1 \text{ correct} \mid \text{attempt }
@@ -559,8 +557,10 @@ $0.2\%$ (MBPP), with a per-attempt parse-health flag recorded.
 verdicts, and their 512-token verdict budget was never binding
 (zero verdict-format failures across all same-family cells); the
 thinking control's 4{,}096-token budget likewise never bound (two
-MBPP tasks were lost to repeated API read timeouts and are
-excluded from its statistics, $n{=}245$ of $247$); the
+MBPP tasks were lost to repeated API read timeouts; complete-case
+statistics exclude them, $n{=}245$---counting them as operational
+failures at $n{=}247$ moves the control's MBPP terminal accuracy
+from $.71$ to $.70$, its within-arm effect unchanged); the
 cross-family reasoning judges,
 given 4{,}096, occasionally exhaust that budget mid-thought, and
 the harness's conservative fallback records these as rejections
@@ -626,7 +626,6 @@ judge\_self\_iso\_thinking & .73 & .66 & .55 & .71 & .233 & .057 & 1.59 & .203 &
 \end{table}
 
 \subsection{Oracle verification never loses correct work}
-Unit-test verification behaves exactly as the theory demands.
 Leak is $.000$ in all four oracle arm-benchmark cells
 (Theorem~\ref{thm:loop} at $b{=}1$), no correct solution is ever
 re-rolled away, and the terminal-vs-own-first-attempt contrast is
@@ -635,15 +634,15 @@ $.063$; the wrong-first pools are only 7--8 tasks) and
 $+20$/$+17$ on MBPP (both $p < 10^{-4}$).  MBPP also displays the
 budget side of the trade: with repair genuinely hard there
 ($\hat q \approx .17$), the oracle arms convert extra budget into
-unresolved mass ($18$--$19\%$) rather than wrong deliveries.  At
+unresolved mass rather than wrong deliveries.  At
 $a = 1$ the backfire condition is vacuous; at $b = 1$ the
 single-shot stream is exactly pure.
 
 \subsection{Same-family judges lose correct work; cross-family
 judges do not}
 Cross-arm comparisons are confounded by first-draw sampling, so
-the causal comparison pairs each arm's terminal outcome against
-\emph{its own} first attempt on the same task
+the primary within-arm comparison pairs each arm's terminal
+outcome against \emph{its own} first attempt on the same task
 (Table~\ref{tab:within}).
 
 \begin{table}[t]
@@ -709,25 +708,43 @@ across the six judges: 3/1/0/0/0/1), because retry quality is no
 longer binding: repairs succeed at $\hat q = .47$--$.95$.  What
 fails is not the repair but the verifier's willingness to accept
 it.  The churn shape also explains the $p_{\mathrm{del}}$ column:
-excluding unresolved tasks removes exactly the tasks the verifier
-destroyed, so a delivered-only convention cannot witness
-churn-type losses by construction.
+a delivered-only convention removes exactly the tasks the
+verifier destroyed.  A third convention prices what a deployed
+system returns when the budget exhausts---fallback delivery of
+the final attempt: under it the self-judge's HumanEval accuracy
+rises from $.84$ to $.951$, exactly the no-verification baseline,
+because $18$ of its $19$ unresolved tasks end on a correct
+attempt the judge kept rejecting (within-arm effect $-9.1 \to
++1.8$pp; MBPP $-4.0 \to -0.4$), while the cross-capability arm
+retains $-2.4$pp, the only cell still negative.  The churn
+itself is unchanged under this lens---the judge demonstrably
+rejected correct work to the last round---but its terminal cost
+depends on the deployment's rejected-to-death policy: our primary
+convention (unresolved as failure) prices the harm of trusting
+the verifier; fallback delivery prices only the residual repair
+degradation.
 
 The judge configurations co-vary---the cross-family judges are
 also stronger, \emph{reasoning} models---and the
-\textsf{judge\_self\_iso\_thinking} control dissects the confound:
+\textsf{judge\_self\_iso\_thinking} control partially separates
+the confounded axes:
 it serves the same qwen-plus family with thinking enabled and the
 cross-family 4{,}096-token verdict budget.  On the family side it
-behaves like its siblings---its acceptance still collapses and
-clusters (§\ref{sec:collapse})---but on the outcome side it does
-not: net $-3$ on HumanEval ($p = .58$) and $-4$ on MBPP
-($p = .45$), against $-15$/$-10$ for its non-reasoning sibling.
+shares the signature---acceptance still collapses and clusters,
+though milder (pooled round-$\geq 2$ acceptance $.32$ vs.\ the plain
+self-judge's $.15$ on HumanEval; §\ref{sec:collapse})---and that
+milder collapse is part of why the outcome differs: net $-3$ on
+HumanEval ($p = .58$) and $-4$ on MBPP ($p = .45$), against
+$-15$/$-10$ for its non-reasoning sibling.
 The significant backfires therefore require the same-family
 correlation \emph{and} the non-reasoning operating point, and the
 difference lives in resubmission behavior: on MBPP the control
 accepts $62\%$ of correct round-2 attempts against the plain
 self-judge's $42\%$, so the churn never becomes a significant
-loss.  The remaining budget asymmetry is
+loss.  That acceptance is bought with compute: the control's
+$7.5$--$8.6$k tokens per task are the most of any arm
+(Appendix~\ref{app:cost})---upgrading the judge is a cost lever,
+not a free fix.  The remaining budget asymmetry is
 inert and biased against the winners: the non-reasoning Qwen
 judges' 512-cap was never binding, while the cross-family
 reasoning judges occasionally exhausted their own budgets
@@ -735,18 +752,20 @@ mid-thought, and the harness recorded those events as rejections
 concentrated on correct attempts (excluding them, glm's
 acceptance of correct work is $.96$ on HumanEval and $.94$ on
 MBPP, against $.80$/$.88$ as measured inside the loop); verdict
-costs differ widely (medians: $240$--$860$ tokens non-reasoning
-Qwen, $860$--$1{,}480$ cross-family, $\approx 3{,}500$ control),
+costs differ widely (medians: $240$--$870$ tokens non-reasoning
+Qwen, $860$--$1{,}480$ cross-family, $3{,}300$--$3{,}900$
+control),
 but the only asymmetry that exists points against the
 cross-family arms.  We report nominal $p$-values throughout: under
 Benjamini--Hochberg control across the twelve judge cells, the
 HumanEval self-judge and both cross-capability backfires remain
 significant, while the MBPP self-judge ($p = .021$) and glm's
 positive effect ($p = .039$) do not---we read both as strongly
-suggestive.  The pattern itself is complete sign separation: the
+suggestive.  The pattern itself is complete rank separation---the
 eight same-family cells are exactly the eight most-negative
-effects of the twelve (exchangeability $p = 1/\binom{12}{8}
-\approx .002$).
+effects of the twelve---reported descriptively; cells share tasks
+and models across benchmarks, so we attach no nominal
+exchangeability $p$-value.
 
 \subsection{The mechanism: per-round acceptance collapse}
 \label{sec:collapse}
@@ -761,10 +780,11 @@ The cross-capability
 and context judges collapse similarly; late-round cells are
 individually noisy ($n = 5$--$29$) but the trajectory is monotone
 and replicates.
-The thinking control collapses in family fashion ($.87 \to .45
-\to .20$ on HumanEval, $.75 \to .62 \to .35$ on MBPP), though
-less steeply than its non-reasoning siblings.  No cross-family
-judge collapses: on parsed verdicts (\emph{Instrumentation
+The thinking control collapses in family fashion, though less
+steeply than its non-reasoning siblings (Table~\ref{tab:ak}).
+We observe no
+comparable collapse in the evaluated cross-family configurations:
+on parsed verdicts (\emph{Instrumentation
 note}), deepseek-v4-pro on MBPP accepts correct work at $.84$
 (round 1) and $.88$ (round 2), and glm-5.2's apparent HumanEval
 decline vanishes---its round-2 acceptance among parsed verdicts
@@ -776,10 +796,13 @@ response to round information.  It is also not a harness artifact
 in the arms where it appears: the same-family judges never
 exhausted their verdict budgets (zero format failures), so every
 same-family rejection in Table~\ref{tab:ak} is a parsed verdict.
-Surviving-pool composition differs across arms, but the generator
-and retry prompts are shared, and the cross-family judges accept
-the same retry stream at a flat rate---neither code style nor
-instrument explains a same-family-specific pattern.  A round-blind
+All arms share the generator and repair-prompt template, but
+realized retry streams differ---verifier decisions determine
+which tasks and feedback reach later rounds; still, the
+cross-family judges' flat acceptance of their own retry streams,
+against the same-family judges' collapse, indicates neither code
+style nor instrument explains a same-family-specific pattern.
+A round-blind
 judge that accepts fresh correct work at $.8+$ and survivors near
 zero is responding to \emph{which tasks} survive: each rejection
 round enriches the surviving pool for instance-persistent
@@ -791,40 +814,43 @@ hostile-mode tasks are re-rejected until the budget dies.
 
 The rejections also cluster by task, as the mixture predicts.  On
 HumanEval the isolated self-judge rejected \emph{every} correct
-attempt on $19$ of the $32$ tasks where it saw more than one; its
-per-task rejection counts are
-overdispersed relative to a pooled binomial
-($\chi^2/\mathrm{df} = 1.31$); the thinking control clusters
-like its siblings ($\chi^2/\mathrm{df} = 1.03$, with $8$ of $24$
-multi-correct tasks all-rejected).  The cross-family arms show no
-such clustering on either benchmark
-($\chi^2/\mathrm{df} = .60$--$.72$; deepseek-v4-pro on MBPP
-rejected all correct attempts on $0$ of the $26$ tasks where it
-saw more than one).  Selection makes this diagnostic imperfect---a
-task must be rejected to keep producing rounds---so we read it as
-evidence \emph{consistent with} instance persistence rather than
-an identification of it; the contrast---same-family clustered,
-cross-family diffuse, on both benchmarks---is what the theory
-anticipates.
+attempt on $19$ of the $32$ tasks where it saw more than one, and
+the thinking control $8$ of $24$ (permutation $p < .0001$); a
+conditional permutation test (10k shuffles of verdicts across
+each arm's correct attempts, per-task counts preserved) confirms
+the self-judge's overdispersion beyond chance on both benchmarks
+($\chi^2/\mathrm{df} = 1.31$, $p < .0001$; $1.08$, $p = .031$),
+while the cross-family arms sit at or below the binomial baseline
+(all permutation $p = 1$, $\chi^2/\mathrm{df} = .60$--$.72$;
+deepseek-v4-pro on MBPP rejected all correct attempts on $0$ of
+the $26$ tasks where it saw more than one).  Selection makes
+this diagnostic imperfect---a task must be rejected to keep
+producing rounds---so we read it as evidence \emph{consistent
+with} instance persistence rather than an identification of it;
+the contrast---same-family clustered, cross-family diffuse, on
+both benchmarks---is what the theory anticipates.
 
 The terminal-backfire condition
 (Corollary~\ref{cor:backfire}) prices the pooled parameters, and
 Table~\ref{tab:backfire} shows both of its forms against the
-data.  The exact finite-budget form, $A_5 < \hat p_1$, signs all
-twelve cells: it flags the four significant backfires and clears
-the eight cells that are not, the thinking control included
-(under a pure sign labeling it additionally misses the four
-negative-but-nonsignificant context and control cells).  The cross-capability arms are flagged clearly
-($-2.5$/$-1.4$pp predicted against $-6.1$/$-4.0$pp observed),
-because their retry quality is genuinely degraded on the hard
-pool ($\hat q = .71$/$.51$ against $\hat p_1 = .95$/$.74$, below
-$q^\ast$ under either rejection-pool estimate)---the degradation
-regime of Theorem~\ref{thm:flip}.  The self-judge arms are
-flagged only marginally ($-0.1$pp each, against $-9.1$/$-4.0$pp
-observed), and the residual is the point: pooling averages away
-the acceptance collapse of Table~\ref{tab:ak}, which is exactly
-the difference between the model's $-0.1$pp and the measured
-losses.  The steady-state reduction
+data.  Read in-sample, the exact finite-budget form $A_5 <
+\hat p_1$ flags all four statistically reliable negative cells
+and clears the four cross-family cells; under a pure sign
+labeling it additionally misses the four negative,
+nonsignificant context and control cells, and its self-judge
+point predictions carry no sign information---a task-level
+bootstrap puts the cross-capability mass at $92\%/80\%$ below
+zero (not significant) and the self-judge mass at coin-flip
+($55\%/52\%$), because pooling averages away the acceptance
+collapse that carries those losses (observed $-9.1$/$-4.0$pp).
+Robust under the same bootstrap: every cross-family cell is
+positive (deepseek/glm CIs exclude zero on both benchmarks, the
+control's on MBPP).  The cross-capability flags point the right
+way because their retry quality is genuinely degraded on the
+hard pool ($\hat q = .71$/$.51$ against $\hat p_1 = .95$/$.74$,
+below $q^\ast$ under either rejection-pool estimate)---the
+degradation regime of Theorem~\ref{thm:flip}.  The steady-state
+reduction
 $\hat R_q < (1-\hat a)/\hat b$ is the interpretable limit and is
 sufficient-only---it agrees everywhere except the two self-judge
 cells, which the finite-budget truncation term catches.  The two
@@ -871,13 +897,15 @@ judge\_self\_iso\_thinking & .75 & .62 & .35 & .25 & .25\\
 \caption{The terminal-backfire condition
 (Corollary~\ref{cor:backfire}) against observed within-arm net
 effects.  $\hat q = \hat p_2$ (mixed rejection pool).  Primary
-prediction: the finite-budget form $A_5 < \hat p_1$ (in-sample
-consistency check, not an out-of-sample forecast); the
-steady-state reduction $\hat R_q < (1-\hat a)/\hat b$ is shown
-for interpretation and is sufficient-only.  Discrimination: 12/12
-under the significance labeling (under a pure sign labeling the
+statistic: the finite-budget form $A_5 < \hat p_1$ (in-sample
+consistency check, not an out-of-sample forecast; task-level
+bootstrap in the text); the steady-state reduction
+$\hat R_q < (1-\hat a)/\hat b$ is shown
+for interpretation and is sufficient-only.  Consistency: flags
+all four significant backfires and clears the four cross-family
+cells; under a pure sign labeling the
 four negative, nonsignificant context and control cells are
-additionally missed).}
+additionally missed.}
 \label{tab:backfire}
 \begin{tabular}{lcccccc}
 \toprule
@@ -915,8 +943,7 @@ operating point satisfies $\hat a + \hat b > 1$.  What the added
 budget buys depends on the configuration.  For the cross-family
 judges the stream barely moves; for the non-reasoning same-family
 judges purity decays with budget as churned mass accumulates
-(the control decays only mildly, $.007 \to .019$ HumanEval and
-$.230 \to .247$ MBPP, below baseline throughout), and the
+(the control decays mildly, staying below baseline), and the
 cross-capability arm on MBPP---lowest catch ($\hat b = .41$) and
 harshest churn---is the only cell whose delivered stream crosses
 the no-verification baseline (at $N{=}3$: $.267$ vs.\ $.259$).  On
@@ -935,16 +962,15 @@ $[0.90, 3.33]$; leak counts are only $2$--$7$ per arm, and $22\%$
 of resamples contain a zero-leak arm) and $1.05$--$1.39$ on MBPP
 (geometric mean $1.19$, $[0.95, 1.43]$; both same-family arms
 individually exclude 1).  A degradation-only model at
-the measured per-round success trajectory reproduces the
-same-family gaps in full on MBPP ($106$--$109\%$ of the
-pooled-to-observed gap), so no miss-clustering channel is
-required there; the cross-family arms' tiny gaps are not
-separately explained ($72$--$75\%$) but sit within noise of zero.
+the measured per-round trajectory reproduces the same-family gaps
+in full on MBPP ($106$--$109\%$), so no miss-clustering channel
+is required there; the cross-family arms' tiny gaps sit within
+noise of zero.
 
 Two lessons.  First, the \emph{magnitude} of pooled-rate failure
-is instrumentation-sensitive: the same three HumanEval judge arms
-that measure $2.1$/$1.8$/$1.7$ here measured $3.4$/$3.3$/$3.6$
-under the pilot's 1{,}024-token cap.  Second, pooled $\hat a$
+is instrumentation-sensitive: those three HumanEval arms measured
+$3.4$/$3.3$/$3.6$ under the pilot's 1{,}024-token cap.  Second,
+pooled $\hat a$
 hides the acceptance collapse of §\ref{sec:collapse} in the
 opposite direction: the pool says the self-judge accepts $58\%$
 of correct work; the round-2 truth is $24\%$ and falling.  Pooled
@@ -961,10 +987,9 @@ two repair sub-loops differing only in feedback content
 (verdict-only vs.\ full traceback; same generator, temperature,
 and budget; McNemar exact on repair success).  The result is a
 clean null: $5/8$ vs.\ $7/8$ repaired on HumanEval ($p = .50$),
-$18/64$ vs.\ $21/64$ on MBPP ($p = .55$), pooled discordants $4$
-vs.\ $9$ ($p = .27$)---the direction consistently favors
-traceback but is far from significance, and the within-run
-(unpaired) comparison is likewise null.  We conclude that
+$18/64$ vs.\ $21/64$ on MBPP ($p = .55$)---the direction
+consistently favors traceback but is far from significance, and
+the within-run (unpaired) comparison is likewise null.  We conclude that
 $\delta > 0$ (Proposition~\ref{prop:delta}) remains open here:
 feedback content is not detectably the lever at this sample size.
 
@@ -1209,6 +1234,45 @@ judge\_self\_ctx & .244 & .244 & .246 & .249 & .248\\
 judge\_deepseek\_iso & .240 & .233 & .237 & .239 & .237\\
 judge\_glm\_iso & .225 & .226 & .225 & .222 & .225\\
 judge\_self\_iso\_thinking & .230 & .227 & .242 & .246 & .247\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Per-task compute cost}\label{app:cost}
+
+The theory's cost currency is attempts ($\mathbb{E}[k]$); this
+table translates it into tokens (means per task; the thinking
+control's reasoning tokens are included in its judge column).
+
+\begin{table}[htbp]
+\centering\small
+\caption{Mean tokens consumed per task by arm and role.}
+\label{tab:cost}
+\begin{tabular}{lcccc}
+\toprule
+Arm & $\mathbb{E}[k]$ & Generator & Judge & Total\\
+\midrule
+\multicolumn{5}{l}{\emph{HumanEval}}\\
+none & 1.00 & 500 & -- & 500\\
+oracle\_full & 1.07 & 757 & -- & 757\\
+oracle\_verdict & 1.10 & 876 & -- & 876\\
+judge\_hetero & 1.46 & 1{,}613 & 637 & 2{,}250\\
+judge\_self\_iso & 1.64 & 2{,}320 & 1{,}083 & 3{,}403\\
+judge\_self\_ctx & 1.41 & 1{,}727 & 1{,}524 & 3{,}251\\
+judge\_deepseek\_iso & 1.21 & 1{,}047 & 2{,}585 & 3{,}632\\
+judge\_glm\_iso & 1.27 & 1{,}138 & 5{,}617 & 6{,}755\\
+judge\_self\_iso\_thinking & 1.40 & 1{,}442 & 7{,}187 & 8{,}629\\
+\midrule
+\multicolumn{5}{l}{\emph{MBPP}}\\
+none & 1.00 & 287 & -- & 287\\
+oracle\_full & 1.86 & 1{,}767 & -- & 1{,}767\\
+oracle\_verdict & 1.89 & 1{,}668 & -- & 1{,}668\\
+judge\_hetero & 1.36 & 724 & 365 & 1{,}089\\
+judge\_self\_iso & 1.51 & 1{,}209 & 578 & 1{,}787\\
+judge\_self\_ctx & 1.38 & 1{,}180 & 1{,}082 & 2{,}262\\
+judge\_deepseek\_iso & 1.28 & 596 & 2{,}187 & 2{,}783\\
+judge\_glm\_iso & 1.23 & 622 & 3{,}842 & 4{,}464\\
+judge\_self\_iso\_thinking & 1.59 & 870 & 6{,}636 & 7{,}506\\
 \bottomrule
 \end{tabular}
 \end{table}
